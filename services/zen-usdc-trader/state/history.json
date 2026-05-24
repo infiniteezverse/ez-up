@@ -2,12 +2,12 @@
   "entries": [
     {
       "date": "2026-05-24",
-      "tvlUsd": 151.12115917770018,
+      "tvlUsd": 151.0711506945869,
       "zenAmount": 12.5021207783309,
       "usdcAmount": 75.02075,
-      "zenPriceUsd": 6.087,
-      "zenPct": 0.5035721641614417,
-      "usdcPct": 0.4964278358385585,
+      "zenPriceUsd": 6.083,
+      "zenPct": 0.5034078336262509,
+      "usdcPct": 0.49659216637374903,
       "totalTrades": 0
     }
   ]
