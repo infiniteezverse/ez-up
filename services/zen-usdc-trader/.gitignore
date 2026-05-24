@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Keep operational state private, but publish history.json (public data feed)
+state/*
+!state/history.json
