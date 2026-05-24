@@ -5,8 +5,13 @@ export const JUICEBOX_URL =
   import.meta.env.VITE_JUICEBOX_URL ||
   'https://juicebox.money/v2/p/YOUR_PROJECT_ID';
 
+// Kept for backward compat; no longer used (balances now read direct from Base RPC)
 export const BASESCAN_API_KEY =
   import.meta.env.VITE_BASESCAN_API_KEY || '';
+
+// Public Base RPC. Override in .env if you want a dedicated RPC (Alchemy, Infura)
+export const BASE_RPC_URL =
+  import.meta.env.VITE_BASE_RPC_URL || 'https://mainnet.base.org';
 
 // Base mainnet token addresses
 export const ZEN_ADDRESS = '0xf43eb8de897fbc7f2502483b2bef7bb9ea179229';
