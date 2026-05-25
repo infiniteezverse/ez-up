@@ -4,6 +4,8 @@ interface DexScreenerPair {
   priceUsd: string;
   volume?: { h24?: number; h1?: number };
   priceChange?: { h24?: number };
+  liquidity?: { usd?: number; base?: number; quote?: number };
+  pairAddress?: string;
 }
 
 interface DexScreenerResponse {
@@ -16,6 +18,10 @@ export interface PriceFeed {
   volume1hUsd: number;
   dailyVol: number;
   priceChange24h?: number;
+  /** Total pool liquidity in USD (both sides combined) — used for slippage estimation */
+  liquidityUsd?: number;
+  /** Address of the pool we sourced the price from */
+  poolAddress?: string;
 }
 
 export async function fetchZenPrice(): Promise<PriceFeed> {
@@ -47,5 +53,7 @@ export async function fetchZenPrice(): Promise<PriceFeed> {
     volume1hUsd: topPair.volume?.h1 ?? 0,
     dailyVol: Math.abs(priceChange24h),
     priceChange24h,
+    liquidityUsd: topPair.liquidity?.usd,
+    poolAddress: topPair.pairAddress,
   };
 }

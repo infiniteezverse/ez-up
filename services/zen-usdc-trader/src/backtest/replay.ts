@@ -1,5 +1,6 @@
 import { decideActionV3, type SafeguardContext } from "../engine.js";
 import { ZEN_DECIMALS, USDC_DECIMALS } from "../config.js";
+import { estimateSlippageBps, maxAcceptableSlippageBps } from "../slippage.js";
 import type { BotState, Config, MarketData } from "../types.js";
 import type { OhlcvBar } from "./priceHistory.js";
 
@@ -29,8 +30,15 @@ export interface ReplayInput {
   initialUsd?: number;
   /** Per-trade fee in USD (EZ-Path basic = 0.03) */
   feePerTradeUsd?: number;
-  /** Estimated slippage in basis points applied per trade (default 10 bps = 0.10%) */
+  /** Flat slippage floor in bps (default 5 bps). Actual slippage scales
+   *  upward with trade size vs pool depth. */
   slippageBps?: number;
+  /** Assumed pool liquidity for slippage modeling (default $500K — typical
+   *  for ZEN/USDC Aerodrome). Larger trades on smaller pools = more slip. */
+  poolLiquidityUsd?: number;
+  /** Apply pre-trade slippage gate from config.maxSlippageFractionOfBracket.
+   *  Default true. */
+  applySlippageGate?: boolean;
   /** Optional: override the safeguards toggles */
   twoTickConfirmation?: boolean;
 }
@@ -52,6 +60,10 @@ export interface ReplayOutput {
   totalFeesUsd: number;
   /** Total slippage paid in USD */
   totalSlippageUsd: number;
+  /** Number of trades blocked by the slippage gate */
+  slippageAborts: number;
+  /** Number of reference resets triggered (zombie baseline decay) */
+  referenceResets: number;
 }
 
 /**
@@ -67,7 +79,9 @@ export function replay(input: ReplayInput): ReplayOutput {
     config,
     initialUsd = 150,
     feePerTradeUsd = 0.03,
-    slippageBps = 10,
+    slippageBps = 5,
+    poolLiquidityUsd = 500_000,
+    applySlippageGate = true,
     twoTickConfirmation = true,
   } = input;
 
@@ -84,6 +98,7 @@ export function replay(input: ReplayInput): ReplayOutput {
   let state: BotState = {
     entryPrice: startPrice,
     lastCycleHigh: startPrice,
+    entryPriceSetAt: bars[0].ts * 1000,
     lastTradeAt: 0,
     tradesToday: 0,
     lastTradeDay: dayKey(bars[0].ts * 1000),
@@ -102,6 +117,11 @@ export function replay(input: ReplayInput): ReplayOutput {
   const priceSeries: number[] = [];
   let totalFeesUsd = 0;
   let totalSlippageUsd = 0;
+  let slippageAborts = 0;
+  let referenceResets = 0;
+
+  const resetWindowMs = config.referenceResetWindowMs ?? 72 * 3600 * 1000;
+  const slipFrac = config.maxSlippageFractionOfBracket ?? 0.25;
 
   for (const bar of bars) {
     const price = bar.close;
@@ -114,6 +134,14 @@ export function replay(input: ReplayInput): ReplayOutput {
       state.openingDayUsdcValueUsd = usdc;
       state.dayOpenedKey = todayKey;
       state.tradesToday = 0;
+    }
+
+    // 72h reference reset (zombie baseline protection)
+    if (resetWindowMs > 0 && nowMs - state.entryPriceSetAt > resetWindowMs) {
+      state.entryPrice = price;
+      state.lastCycleHigh = price;
+      state.entryPriceSetAt = nowMs;
+      referenceResets += 1;
     }
 
     const zenValueUsd = zen * price;
@@ -167,20 +195,46 @@ export function replay(input: ReplayInput): ReplayOutput {
 
     // Execute trade if decision says so
     if (decision.action !== "HOLD" && decision.percentOfAsset > 0) {
-      const slippageUsd = (decision.notionalUsd ?? 0) * (slippageBps / 10_000);
+      // Size-dependent slippage: floor + AMM impact from trade vs pool depth
+      const notional = decision.notionalUsd ?? 0;
+      const ammBps = estimateSlippageBps({ tradeNotionalUsd: notional, poolLiquidityUsd });
+      const totalBps = slippageBps + ammBps;
+
+      // Pre-trade slippage gate (mirrors live bot)
+      if (applySlippageGate && slipFrac > 0 && decision.tier) {
+        const bracketPct =
+          decision.action === "SELL_ZEN"
+            ? config.upsideBrackets[decision.tier - 1]
+            : config.downsideBrackets[decision.tier - 1];
+        const maxBps = maxAcceptableSlippageBps(bracketPct, slipFrac);
+        if (totalBps > maxBps) {
+          slippageAborts += 1;
+          // Don't execute; reset decision so 2-tick state stays clean
+          state.lastDecisionAction = "HOLD";
+          state.lastDecisionTier = undefined;
+          const closingZenValueUsd = zen * price;
+          const closingTvl = closingZenValueUsd + usdc;
+          tvlSeries.push(closingTvl);
+          zenPctSeries.push(closingTvl > 0 ? closingZenValueUsd / closingTvl : 0);
+          priceSeries.push(price);
+          continue; // skip to next bar
+        }
+      }
+
+      const slippageUsd = notional * (totalBps / 10_000);
       let executedZen: number;
       let executedUsdc: number;
 
       if (decision.action === "SELL_ZEN") {
         executedZen = zen * decision.percentOfAsset;
         // Effective price worse by slippage
-        const effectivePrice = price * (1 - slippageBps / 10_000);
+        const effectivePrice = price * (1 - totalBps / 10_000);
         executedUsdc = executedZen * effectivePrice;
         zen -= executedZen;
         usdc += executedUsdc - feePerTradeUsd; // fee deducted from USDC received
       } else {
         executedUsdc = usdc * decision.percentOfAsset;
-        const effectivePrice = price * (1 + slippageBps / 10_000);
+        const effectivePrice = price * (1 + totalBps / 10_000);
         executedZen = (executedUsdc - feePerTradeUsd) / effectivePrice; // fee from USDC spent
         usdc -= executedUsdc;
         zen += Math.max(0, executedZen);
@@ -208,6 +262,7 @@ export function replay(input: ReplayInput): ReplayOutput {
       // Mirror live bot: reset baselines after a successful trade
       state.entryPrice = price;
       state.lastCycleHigh = price;
+      state.entryPriceSetAt = nowMs;
       state.lastTradeAt = nowMs;
       state.tradesToday = todayKey === state.lastTradeDay ? state.tradesToday + 1 : 1;
       state.lastTradeDay = todayKey;
@@ -232,6 +287,8 @@ export function replay(input: ReplayInput): ReplayOutput {
     endTs: bars[bars.length - 1].ts,
     totalFeesUsd,
     totalSlippageUsd,
+    slippageAborts,
+    referenceResets,
   };
 }
 

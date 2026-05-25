@@ -44,13 +44,20 @@ function asciiSpark(values: number[], width = 60): string {
 async function main() {
   const days = Number(arg("days", "90"));
   const outPath = arg("out", `backtest-results/${todayKey()}.md`);
-  const initialUsd = Number(arg("initial", "150"));
-  const slippageBps = Number(arg("slippage", "10"));
+  // Comma-separated list of treasury sizes to test (default: just $150)
+  const initialList = arg("initial", "150")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => n > 0);
+  const initialUsd = initialList[0];
+  const slippageBps = Number(arg("slippage", "5"));
   const fee = Number(arg("fee", "0.03"));
+  const poolLiquidityUsd = Number(arg("pool", "500000"));
 
   console.log(`📊 Backtest — ${days}d of ZEN/USDC on Base`);
-  console.log(`   Initial portfolio: $${initialUsd.toFixed(2)} (50/50 split)`);
-  console.log(`   Fee per trade: $${fee} · Slippage: ${slippageBps} bps`);
+  console.log(`   Treasury sizes: ${initialList.map((n) => "$" + n.toLocaleString()).join(", ")}`);
+  console.log(`   Fee per trade: $${fee} · Slippage floor: ${slippageBps} bps`);
+  console.log(`   Pool liquidity assumed: $${(poolLiquidityUsd / 1000).toFixed(0)}K`);
   console.log("");
 
   console.log("⏳ Fetching historical OHLCV from Geckoterminal…");
@@ -63,27 +70,35 @@ async function main() {
   console.log(`   Got ${history.bars.length} hourly bars covering ${actualDays.toFixed(1)} days`);
   console.log("");
 
-  // Run baseline (live config, twoTick=on)
-  console.log("🎯 Running BASELINE (live config)…");
-  const baselineReplay = replay({
-    bars: history.bars,
-    config: configV3,
-    initialUsd,
-    feePerTradeUsd: fee,
-    slippageBps,
-    twoTickConfirmation: true,
+  // Run baseline at each treasury size
+  console.log("🎯 Running BASELINE (live config) at each treasury size…");
+  const sizedResults = initialList.map((sizeUsd) => {
+    const r = replay({
+      bars: history.bars,
+      config: configV3,
+      initialUsd: sizeUsd,
+      feePerTradeUsd: fee,
+      slippageBps,
+      poolLiquidityUsd,
+      // 2-tick state read from configV3
+      twoTickConfirmation: configV3.twoTickConfirmation !== false,
+    });
+    const m = computeMetrics(r);
+    console.log(
+      `   $${sizeUsd.toLocaleString().padStart(8)} → trades=${String(m.tradeCount).padStart(3)} ` +
+        `aborts=${String(r.slippageAborts).padStart(3)} resets=${String(r.referenceResets).padStart(2)} ` +
+        `net=${fmtPct(m.netReturnPct).padStart(7)} vs B&H=${fmtPct(m.alphaPct).padStart(6)} ` +
+        `dd=${fmtPct(m.maxDrawdownPct).padStart(7)} sharpe=${m.sharpeRatio.toFixed(2)}`
+    );
+    return { sizeUsd, replay: r, metrics: m };
   });
-  const baseline = computeMetrics(baselineReplay);
-  console.log(
-    `   trades=${baseline.tradeCount} net=${fmtPct(baseline.netReturnPct)} ` +
-      `vs B&H=${fmtPct(baseline.buyAndHoldReturnPct)} ` +
-      `dd=${fmtPct(baseline.maxDrawdownPct)} sharpe=${baseline.sharpeRatio.toFixed(2)}`
-  );
+  const baselineReplay = sizedResults[0].replay;
+  const baseline = sizedResults[0].metrics;
   console.log("");
 
-  // Run sweep
+  // Run sweep at default size
   const variants = buildVariants();
-  console.log(`🔬 Running param sweep (${variants.length} variants)…`);
+  console.log(`🔬 Running param sweep (${variants.length} variants) at $${initialUsd.toLocaleString()}…`);
   const sweep = runSweep({
     bars: history.bars,
     variants,
@@ -101,9 +116,11 @@ async function main() {
     baseline,
     baselineReplay,
     sweep,
+    sizedResults,
     initialUsd,
     fee,
     slippageBps,
+    poolLiquidityUsd,
   });
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, md, "utf-8");
@@ -129,11 +146,13 @@ function renderReport(p: {
   baseline: BacktestMetrics;
   baselineReplay: ReturnType<typeof replay>;
   sweep: SweepResult[];
+  sizedResults: Array<{ sizeUsd: number; replay: ReturnType<typeof replay>; metrics: BacktestMetrics }>;
   initialUsd: number;
   fee: number;
   slippageBps: number;
+  poolLiquidityUsd: number;
 }): string {
-  const { days, history, baseline, baselineReplay, sweep, initialUsd, fee, slippageBps } = p;
+  const { days, history, baseline, baselineReplay, sweep, sizedResults, initialUsd, fee, slippageBps, poolLiquidityUsd } = p;
   const startDate = new Date(history.bars[0].ts * 1000).toISOString().slice(0, 10);
   const endDate = new Date(history.bars[history.bars.length - 1].ts * 1000).toISOString().slice(0, 10);
   const top = sweep.slice(0, 10);
@@ -147,10 +166,30 @@ function renderReport(p: {
   lines.push(`Initial portfolio: **$${initialUsd.toFixed(2)}** (50/50 ZEN/USDC by USD value)`);
   lines.push(`Fee per trade: **$${fee}** · Slippage assumed: **${slippageBps} bps**`);
   lines.push("");
-  lines.push(`> **Caveat**: backtest assumes you'd have gotten the same closing-bar price as a fill, ` +
-    `with a flat ${slippageBps} bps slippage adjustment and \$${fee} per trade. Real fills will differ, ` +
-    `especially during fast moves.`);
+  lines.push(`> **Slippage model**: ${slippageBps} bps floor + AMM constant-product impact from ` +
+    `trade notional vs assumed pool depth of \$${(poolLiquidityUsd / 1000).toFixed(0)}K. ` +
+    `EZ Path's multi-venue routing splits trades, so real fills should be **better** than this conservative estimate.`);
   lines.push("");
+
+  // === Treasury scaling section ===
+  if (sizedResults.length > 1) {
+    lines.push(`## Treasury scaling — same strategy at different sizes`);
+    lines.push("");
+    lines.push("How the strategy behaves as the Juicebox treasury grows. ");
+    lines.push("Slippage scales non-linearly with trade size; the pre-trade gate aborts trades that would exceed 25% of the bracket size in slippage.");
+    lines.push("");
+    lines.push("| Treasury | Trades | Aborts | Resets | Net | vs B&H | Max DD | Sharpe | Fees+Slip |");
+    lines.push("|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for (const r of sizedResults) {
+      const m = r.metrics;
+      lines.push(
+        `| ${fmtUsd(r.sizeUsd)} | ${m.tradeCount} | ${r.replay.slippageAborts} | ${r.replay.referenceResets} | ${fmtPct(m.netReturnPct)} | ${fmtPct(m.alphaPct)} | ${fmtPct(m.maxDrawdownPct)} | ${m.sharpeRatio.toFixed(2)} | ${fmtUsd(m.totalFeesUsd + m.totalSlippageUsd)} |`
+      );
+    }
+    lines.push("");
+    lines.push("**Reading this table**: If the slippage-aborts column climbs with treasury size, it means the strategy is hitting its slippage gate more often — trades are being skipped because they'd cost too much. If alpha drops sharply at larger sizes, the strategy doesn't scale well at the current pool depth.");
+    lines.push("");
+  }
 
   // BASELINE section
   lines.push(`## Baseline (live config)`);

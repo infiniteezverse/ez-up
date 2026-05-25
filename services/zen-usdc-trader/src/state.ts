@@ -24,6 +24,7 @@ export function initialState(currentPrice: number, now: number, openingZenValueU
   return {
     entryPrice: currentPrice,
     lastCycleHigh: currentPrice,
+    entryPriceSetAt: now,
     lastTradeAt: 0,
     tradesToday: 0,
     lastTradeDay: dayKey,

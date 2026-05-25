@@ -38,6 +38,16 @@ export const configV3: Config = {
   // live at execution time, so vanished wicks just mean smaller fills).
   // Trade fires immediately on first bracket hit.
   twoTickConfirmation: false,
+  // Added 2026-05-25 (institutional armor):
+  // Zombie-baseline protection: if no trade has reset the baselines for
+  // 72h, decay them to the current spot so we don't trade against
+  // weeks-old reference prices during quiet markets.
+  referenceResetWindowMs: 72 * 3600 * 1000,
+  // Pre-trade slippage gate: estimated slippage must be ≤ 25% of the
+  // target tier's bracket size. e.g. a tier 1 (2%) trade tolerates up
+  // to 50 bps (0.5%) of slippage; a tier 5 (12%) trade tolerates up to
+  // 300 bps. Above this, abort and retry next tick.
+  maxSlippageFractionOfBracket: 0.25,
 };
 
 // Safeguard configurations

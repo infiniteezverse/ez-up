@@ -7,6 +7,7 @@ import { fetchZenPrice } from "./price.js";
 import { initialState, loadState, saveState } from "./state.js";
 import { recordSnapshot } from "./snapshot.js";
 import { appendTrade } from "./ledger.js";
+import { estimateSlippageBps, maxAcceptableSlippageBps } from "./slippage.js";
 import type { BotState, MarketData, TradeRecord } from "./types.js";
 import type { SafeguardContext } from "./engine.js";
 
@@ -45,6 +46,26 @@ async function tick(privateKey: string): Promise<void> {
     state.dayOpenedKey = todayKey;
     state.tradesToday = 0;
     console.log(`📅 New day; reset opening values and trade counter`);
+  }
+
+  // Reference reset: prevent zombie baselines during quiet markets.
+  // If no trade has refreshed entryPrice/lastCycleHigh for the configured
+  // window (default 72h), decay them to current spot.
+  const resetWindowMs = configV3.referenceResetWindowMs ?? 72 * 3600 * 1000;
+  if (resetWindowMs > 0) {
+    // Backfill entryPriceSetAt for pre-existing state files that lack it
+    if (!state.entryPriceSetAt) state.entryPriceSetAt = now;
+    const stale = now - state.entryPriceSetAt > resetWindowMs;
+    if (stale) {
+      const oldEntry = state.entryPrice;
+      state.entryPrice = price.priceUsd;
+      state.lastCycleHigh = price.priceUsd;
+      state.entryPriceSetAt = now;
+      console.log(
+        `⏰ Reference reset: ${((now - state.entryPriceSetAt + resetWindowMs) / 3600000).toFixed(0)}h since last set; ` +
+          `entryPrice $${oldEntry.toFixed(4)} → $${price.priceUsd.toFixed(4)}`
+      );
+    }
   }
 
   // Daily public snapshot (idempotent per UTC day; powers landing-page tracker)
@@ -105,6 +126,36 @@ async function tick(privateKey: string): Promise<void> {
 
   const sellDecimals = sellToken === "ZEN" ? ZEN_DECIMALS : USDC_DECIMALS;
   const sellAmountHuman = Number(sellAmount) / Math.pow(10, sellDecimals);
+
+  // Pre-trade slippage gate (institutional armor):
+  // Estimate slippage from pool depth and trade notional. If projected
+  // slippage exceeds maxSlippageFractionOfBracket × bracket size, ABORT
+  // and retry next tick. Stateless. EZ Path's multi-venue routing will
+  // typically produce smaller real slippage than this conservative
+  // estimate, so this is a safety upper bound.
+  const slipFrac = configV3.maxSlippageFractionOfBracket ?? 0.25;
+  if (slipFrac > 0 && price.liquidityUsd && decision.tier && decision.notionalUsd) {
+    const bracketPct =
+      decision.action === "SELL_ZEN"
+        ? configV3.upsideBrackets[decision.tier - 1]
+        : configV3.downsideBrackets[decision.tier - 1];
+    const projectedBps = estimateSlippageBps({
+      tradeNotionalUsd: decision.notionalUsd,
+      poolLiquidityUsd: price.liquidityUsd,
+    });
+    const maxBps = maxAcceptableSlippageBps(bracketPct, slipFrac);
+    if (projectedBps > maxBps) {
+      console.log(
+        `🛑 Slippage gate: projected ${projectedBps} bps > max ${maxBps} bps ` +
+          `(notional=$${decision.notionalUsd.toFixed(2)}, pool=$${(price.liquidityUsd / 1000).toFixed(0)}K). Aborting trade.`
+      );
+      state.lastDecisionAction = "HOLD";
+      state.lastDecisionTier = undefined;
+      await saveState(state);
+      return;
+    }
+    console.log(`🛡️  Slippage check OK: ${projectedBps} bps projected (max ${maxBps})`);
+  }
 
   console.log(
     `⚡ Executing: ${sellToken} → ${buyToken} | sellAmount: ${sellAmountHuman.toFixed(sellDecimals === 18 ? 4 : 2)}`
@@ -175,6 +226,7 @@ async function tick(privateKey: string): Promise<void> {
 
     state.entryPrice = price.priceUsd;
     state.lastCycleHigh = price.priceUsd;
+    state.entryPriceSetAt = now;
     state.lastTradeAt = now;
     state.tradesToday = todayKey === state.lastTradeDay ? state.tradesToday + 1 : 1;
     state.lastTradeDay = todayKey;

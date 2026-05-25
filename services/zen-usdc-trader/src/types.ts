@@ -1,6 +1,8 @@
 export interface BotState {
   entryPrice: number;
   lastCycleHigh: number;
+  /** Unix ms when entryPrice/lastCycleHigh were last set (init, trade, or 72h decay) */
+  entryPriceSetAt: number;
   lastTradeAt: number;
   tradesToday: number;
   lastTradeDay: number;
@@ -51,6 +53,14 @@ export interface Config {
    *  Default: true (safer; filters wicks). EZ Path multi-venue routing already
    *  protects against front-running/MEV, so wicks are the only remaining risk. */
   twoTickConfirmation?: boolean;
+  /** Reset entryPrice/lastCycleHigh to spot if more than this many ms elapsed
+   *  since last set (no recent trade). Prevents zombie baselines during quiet
+   *  periods. Default: 72h = 259200000 ms. Set to 0 to disable. */
+  referenceResetWindowMs?: number;
+  /** Max acceptable estimated slippage as a FRACTION of the target bracket
+   *  size (e.g., 0.25 = abort if slippage > 25% of bracket). Default 0.25.
+   *  Set to 0 to disable. */
+  maxSlippageFractionOfBracket?: number;
 }
 
 export interface ExecutionResult {
