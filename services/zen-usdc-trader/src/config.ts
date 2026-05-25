@@ -32,6 +32,12 @@ export const configV3: Config = {
   minDailyVol: 0.05,
   enableVolumeFilter: false,
   minVolumeRatio: 0.5,
+  // Disabled 2026-05-25: EZ Path's multi-venue private routing already
+  // protects against front-running/MEV. Wicks are the only remaining
+  // risk, and worst-case cost is a fee + minor slippage (EZ Path quotes
+  // live at execution time, so vanished wicks just mean smaller fills).
+  // Trade fires immediately on first bracket hit.
+  twoTickConfirmation: false,
 };
 
 // Safeguard configurations

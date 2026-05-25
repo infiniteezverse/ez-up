@@ -91,8 +91,9 @@ export function decideActionV3(
         return { action: "HOLD", percentOfAsset: 0, reason: `Strong 24h trend (+${(safeguards.priceChange24h * 100).toFixed(1)}%); skipping tier 1 to let trend run.` };
       }
 
+      const twoTickRequired = config.twoTickConfirmation !== false; // default true
       const isSameDecision = state.lastDecisionAction === "SELL_ZEN" && state.lastDecisionTier === idx + 1;
-      if (isSameDecision) {
+      if (!twoTickRequired || isSameDecision) {
         const slice = config.upsideSlices[idx];
         const zenAmount = Number(zenBalance) / 1e18;
         const notional = zenAmount * slice * currentPrice;
@@ -135,8 +136,9 @@ export function decideActionV3(
         return { action: "HOLD", percentOfAsset: 0, reason: `Daily P&L down ${(dailyPnlPct * 100).toFixed(1)}%; halting buys to prevent averaging into dump.` };
       }
 
+      const twoTickRequired = config.twoTickConfirmation !== false; // default true
       const isSameDecision = state.lastDecisionAction === "BUY_ZEN" && state.lastDecisionTier === idx + 1;
-      if (isSameDecision) {
+      if (!twoTickRequired || isSameDecision) {
         const slice = config.downsideSlices[idx];
         const usdcAmount = Number(usdcBalance) / 1e6;
         const notional = usdcAmount * slice;

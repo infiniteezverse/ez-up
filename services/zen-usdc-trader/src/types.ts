@@ -47,6 +47,10 @@ export interface Config {
   minDailyVol?: number;
   enableVolumeFilter?: boolean;
   minVolumeRatio?: number;
+  /** If false, trades fire immediately on first bracket hit (no 2-tick wait).
+   *  Default: true (safer; filters wicks). EZ Path multi-venue routing already
+   *  protects against front-running/MEV, so wicks are the only remaining risk. */
+  twoTickConfirmation?: boolean;
 }
 
 export interface ExecutionResult {
