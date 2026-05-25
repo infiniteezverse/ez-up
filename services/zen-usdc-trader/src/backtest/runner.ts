@@ -7,11 +7,12 @@
  */
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { configV3 } from "../config.js";
+import { configV3, PAIRS } from "../config.js";
 import { computeMetrics, fmtPct, fmtUsd, type BacktestMetrics } from "./metrics.js";
 import { loadOrFetch } from "./priceHistory.js";
 import { buildVariants, runSweep, type SweepResult } from "./paramSweep.js";
 import { replay } from "./replay.js";
+import type { PairConfig } from "../types.js";
 
 function arg(name: string, fallback: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -53,47 +54,83 @@ async function main() {
   const slippageBps = Number(arg("slippage", "5"));
   const fee = Number(arg("fee", "0.03"));
   const poolLiquidityUsd = Number(arg("pool", "500000"));
+  // If --pair flag is provided, run for that pair name. Otherwise run all PAIRS.
+  const pairFilter = arg("pair", "");
+  const pairsToRun: PairConfig[] = pairFilter
+    ? PAIRS.filter((p) => p.name === pairFilter)
+    : PAIRS;
 
-  console.log(`📊 Backtest — ${days}d of ZEN/USDC on Base`);
+  console.log(`📊 Backtest — ${days}d on Base`);
+  console.log(`   Pairs: ${pairsToRun.map((p) => p.name).join(", ")}`);
   console.log(`   Treasury sizes: ${initialList.map((n) => "$" + n.toLocaleString()).join(", ")}`);
   console.log(`   Fee per trade: $${fee} · Slippage floor: ${slippageBps} bps`);
-  console.log(`   Pool liquidity assumed: $${(poolLiquidityUsd / 1000).toFixed(0)}K`);
+  console.log(`   Pool liquidity assumed: $${(poolLiquidityUsd / 1000).toFixed(0)}K (for slippage model)`);
   console.log("");
 
-  console.log("⏳ Fetching historical OHLCV from Geckoterminal…");
-  const history = await loadOrFetch({ days, timeframe: "hour" });
-  if (history.bars.length === 0) {
-    console.error("❌ No bars returned");
+  // Fetch OHLCV history per pair
+  type PairHistory = { pair: PairConfig; bars: Awaited<ReturnType<typeof loadOrFetch>>["bars"] };
+  const pairHistories: PairHistory[] = [];
+  for (const pair of pairsToRun) {
+    console.log(`⏳ Fetching ${pair.name} OHLCV (pool ${pair.poolAddress})…`);
+    const h = await loadOrFetch({ days, timeframe: "hour", pool: pair.poolAddress });
+    if (h.bars.length === 0) {
+      console.error(`❌ No bars for ${pair.name}`);
+      continue;
+    }
+    const d = (h.bars[h.bars.length - 1].ts - h.bars[0].ts) / 86400;
+    console.log(`   Got ${h.bars.length} hourly bars covering ${d.toFixed(1)} days`);
+    pairHistories.push({ pair, bars: h.bars });
+  }
+  if (pairHistories.length === 0) {
+    console.error("❌ No history fetched for any pair");
     process.exit(1);
   }
+  const history = { ...(await loadOrFetch({ days, timeframe: "hour", pool: pairHistories[0].pair.poolAddress })), bars: pairHistories[0].bars };
   const actualDays = (history.bars[history.bars.length - 1].ts - history.bars[0].ts) / 86400;
-  console.log(`   Got ${history.bars.length} hourly bars covering ${actualDays.toFixed(1)} days`);
   console.log("");
 
-  // Run baseline at each treasury size
-  console.log("🎯 Running BASELINE (live config) at each treasury size…");
-  const sizedResults = initialList.map((sizeUsd) => {
-    const r = replay({
-      bars: history.bars,
-      config: configV3,
-      initialUsd: sizeUsd,
-      feePerTradeUsd: fee,
-      slippageBps,
-      poolLiquidityUsd,
-      // 2-tick state read from configV3
-      twoTickConfirmation: configV3.twoTickConfirmation !== false,
-    });
-    const m = computeMetrics(r);
-    console.log(
-      `   $${sizeUsd.toLocaleString().padStart(8)} → trades=${String(m.tradeCount).padStart(3)} ` +
-        `aborts=${String(r.slippageAborts).padStart(3)} resets=${String(r.referenceResets).padStart(2)} ` +
-        `net=${fmtPct(m.netReturnPct).padStart(7)} vs B&H=${fmtPct(m.alphaPct).padStart(6)} ` +
-        `dd=${fmtPct(m.maxDrawdownPct).padStart(7)} sharpe=${m.sharpeRatio.toFixed(2)}`
-    );
-    return { sizeUsd, replay: r, metrics: m };
-  });
-  const baselineReplay = sizedResults[0].replay;
-  const baseline = sizedResults[0].metrics;
+  // Run baseline per pair × treasury size matrix
+  console.log("🎯 Running BASELINE (live config) per pair × treasury size…");
+  type PairSized = {
+    pair: PairConfig;
+    sizeUsd: number;
+    replay: ReturnType<typeof replay>;
+    metrics: BacktestMetrics;
+  };
+  const pairSizedResults: PairSized[] = [];
+  for (const { pair, bars } of pairHistories) {
+    console.log(`  ── ${pair.name} ──`);
+    for (const sizeUsd of initialList) {
+      const r = replay({
+        bars,
+        config: pair.strategy,
+        initialUsd: sizeUsd,
+        feePerTradeUsd: fee,
+        slippageBps,
+        poolLiquidityUsd, // could be made per-pair later
+        twoTickConfirmation: pair.strategy.twoTickConfirmation !== false,
+      });
+      const m = computeMetrics(r);
+      console.log(
+        `   $${sizeUsd.toLocaleString().padStart(8)} → trades=${String(m.tradeCount).padStart(3)} ` +
+          `aborts=${String(r.slippageAborts).padStart(3)} resets=${String(r.referenceResets).padStart(2)} ` +
+          `net=${fmtPct(m.netReturnPct).padStart(7)} vs B&H=${fmtPct(m.alphaPct).padStart(6)} ` +
+          `dd=${fmtPct(m.maxDrawdownPct).padStart(7)} sharpe=${m.sharpeRatio.toFixed(2)}`
+      );
+      pairSizedResults.push({ pair, sizeUsd, replay: r, metrics: m });
+    }
+  }
+
+  // Pick the first pair's first-size as the "baseline" for the rest of the report
+  const baselinePair = pairSizedResults[0];
+  const baselineReplay = baselinePair.replay;
+  const baseline = baselinePair.metrics;
+
+  // Backward-compat: build sizedResults from the FIRST pair only
+  const sizedResults = pairSizedResults
+    .filter((r) => r.pair.name === pairHistories[0].pair.name)
+    .map(({ sizeUsd, replay: r, metrics }) => ({ sizeUsd, replay: r, metrics }));
+
   console.log("");
 
   // Run sweep at default size
@@ -117,6 +154,7 @@ async function main() {
     baselineReplay,
     sweep,
     sizedResults,
+    pairSizedResults,
     initialUsd,
     fee,
     slippageBps,
@@ -147,12 +185,13 @@ function renderReport(p: {
   baselineReplay: ReturnType<typeof replay>;
   sweep: SweepResult[];
   sizedResults: Array<{ sizeUsd: number; replay: ReturnType<typeof replay>; metrics: BacktestMetrics }>;
+  pairSizedResults: Array<{ pair: PairConfig; sizeUsd: number; replay: ReturnType<typeof replay>; metrics: BacktestMetrics }>;
   initialUsd: number;
   fee: number;
   slippageBps: number;
   poolLiquidityUsd: number;
 }): string {
-  const { days, history, baseline, baselineReplay, sweep, sizedResults, initialUsd, fee, slippageBps, poolLiquidityUsd } = p;
+  const { days, history, baseline, baselineReplay, sweep, sizedResults, pairSizedResults, initialUsd, fee, slippageBps, poolLiquidityUsd } = p;
   const startDate = new Date(history.bars[0].ts * 1000).toISOString().slice(0, 10);
   const endDate = new Date(history.bars[history.bars.length - 1].ts * 1000).toISOString().slice(0, 10);
   const top = sweep.slice(0, 10);
@@ -170,6 +209,24 @@ function renderReport(p: {
     `trade notional vs assumed pool depth of \$${(poolLiquidityUsd / 1000).toFixed(0)}K. ` +
     `EZ Path's multi-venue routing splits trades, so real fills should be **better** than this conservative estimate.`);
   lines.push("");
+
+  // === Per-pair comparison section ===
+  const uniquePairs = Array.from(new Set(pairSizedResults.map((r) => r.pair.name)));
+  if (uniquePairs.length > 1) {
+    lines.push(`## Per-pair comparison (at \$${initialUsd.toLocaleString()})`);
+    lines.push("");
+    lines.push("Same strategy applied to each pair independently. Shows which pairs are good fits for the bracket-trading approach.");
+    lines.push("");
+    lines.push("| Pair | Trades | Aborts | Resets | Net | vs B&H | Annualized | Max DD | Sharpe |");
+    lines.push("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for (const r of pairSizedResults.filter((x) => x.sizeUsd === initialUsd)) {
+      const m = r.metrics;
+      lines.push(
+        `| **${r.pair.name}** | ${m.tradeCount} | ${r.replay.slippageAborts} | ${r.replay.referenceResets} | ${fmtPct(m.netReturnPct)} | ${fmtPct(m.alphaPct)} | ${fmtPct(m.annualizedReturnPct)} | ${fmtPct(m.maxDrawdownPct)} | ${m.sharpeRatio.toFixed(2)} |`
+      );
+    }
+    lines.push("");
+  }
 
   // === Treasury scaling section ===
   if (sizedResults.length > 1) {

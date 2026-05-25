@@ -9,10 +9,9 @@ import {
   TOLL_ADDRESS,
   USDC_ADDRESS,
   USDC_DECIMALS,
-  ZEN_ADDRESS,
-  ZEN_DECIMALS,
+  ZEN_USDC_PAIR,
 } from "./config.js";
-import type { ExecutionResult } from "./types.js";
+import type { ExecutionResult, PairConfig } from "./types.js";
 
 const EIP3009_TYPES = {
   TransferWithAuthorization: [
@@ -39,22 +38,27 @@ function randomNonce(): `0x${string}` {
 
 export interface SwapParams {
   privateKey: string;
-  sellToken: "ZEN" | "USDC";
-  buyToken: "ZEN" | "USDC";
+  /** "VOL" = sell the volatile token of `pair`. "USDC" = sell stable side. */
+  sellToken: "VOL" | "USDC";
+  /** "VOL" = buy the volatile token of `pair`. "USDC" = buy stable side. */
+  buyToken: "VOL" | "USDC";
   sellAmount: bigint;
+  /** Which pair to trade (default ZEN/USDC for backward compat) */
+  pair?: PairConfig;
   dryRun?: boolean;
 }
 
 export async function executeSwap(params: SwapParams): Promise<ExecutionResult> {
   const { privateKey, sellToken, buyToken, sellAmount, dryRun } = params;
+  const pair = params.pair ?? ZEN_USDC_PAIR;
 
   if (sellToken === buyToken) {
     return { status: "failed", error: "sellToken === buyToken" };
   }
 
-  const sellTokenAddress = sellToken === "ZEN" ? ZEN_ADDRESS : USDC_ADDRESS;
-  const buyTokenAddress = buyToken === "ZEN" ? ZEN_ADDRESS : USDC_ADDRESS;
-  const sellDecimals = sellToken === "ZEN" ? ZEN_DECIMALS : USDC_DECIMALS;
+  const sellTokenAddress = sellToken === "VOL" ? pair.tokenAddress : USDC_ADDRESS;
+  const buyTokenAddress = buyToken === "VOL" ? pair.tokenAddress : USDC_ADDRESS;
+  const sellDecimals = sellToken === "VOL" ? pair.tokenDecimals : USDC_DECIMALS;
 
   const account = privateKeyToAccount(privateKey as `0x${string}`);
 

@@ -3,9 +3,16 @@ import { dirname } from "node:path";
 
 // Aerodrome ZEN/USDC pool on Base (top by 24h volume per DexScreener)
 export const DEFAULT_POOL = "0x0392B12a1cEb0cd13af5Ea448CF5586EA609852D";
+// Uniswap V3 ETH/USDC pool on Base (deepest liquidity ~$126M)
+export const ETH_USDC_POOL = "0x6c561B446416E1A00E8E93E221854d6eA4171372";
 export const NETWORK = "base";
 
 const CACHE_PATH = "./state/price-history.json";
+
+/** Per-pool cache file path; one cache file per pool address */
+function cachePathFor(pool: string): string {
+  return `./state/price-history-${pool.toLowerCase()}.json`;
+}
 
 // Geckoterminal returns up to 1000 bars per request, newest-first.
 // Hourly bars => 1000 hours ≈ 41 days per request.
@@ -106,8 +113,8 @@ export async function fetchPriceHistory(opts: {
     cursor = oldest.ts;
     attempts += 1;
 
-    // Be polite to the free API
-    await new Promise((r) => setTimeout(r, 350));
+    // Be polite to the free API (rate limit ~30 req/min)
+    await new Promise((r) => setTimeout(r, 2500));
   }
 
   const bars = [...collected.values()]
@@ -139,6 +146,7 @@ export async function loadCache(path: string = CACHE_PATH): Promise<PriceHistory
 
 /**
  * Load from cache if fresh enough (default: 6 hours), otherwise fetch and cache.
+ * Uses a per-pool cache file so multiple pairs can be backtested independently.
  */
 export async function loadOrFetch(opts: {
   pool?: string;
@@ -148,13 +156,13 @@ export async function loadOrFetch(opts: {
   cachePath?: string;
 }): Promise<PriceHistory> {
   const maxAge = opts.maxCacheAgeSec ?? 6 * 3600;
-  const path = opts.cachePath ?? CACHE_PATH;
+  const pool = opts.pool ?? DEFAULT_POOL;
+  const path = opts.cachePath ?? cachePathFor(pool);
   const cached = await loadCache(path);
   if (cached) {
     const age = Math.floor(Date.now() / 1000) - cached.fetchedAt;
     const matchesShape =
-      cached.pool === (opts.pool ?? DEFAULT_POOL) &&
-      cached.timeframe === (opts.timeframe ?? "hour");
+      cached.pool === pool && cached.timeframe === (opts.timeframe ?? "hour");
     if (matchesShape && age < maxAge && cached.bars.length > 0) {
       const days = (cached.bars[cached.bars.length - 1].ts - cached.bars[0].ts) / 86400;
       if (days >= opts.days * 0.9) return cached;
