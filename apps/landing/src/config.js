@@ -34,6 +34,12 @@ export const HISTORY_URL =
   import.meta.env.VITE_HISTORY_URL ||
   'https://raw.githubusercontent.com/infiniteezverse/ez-up/main/services/zen-usdc-trader/state/history.json';
 
+// URL of the bot's published trades.json (per-trade ledger).
+// Auto-updated by the bot after every executed trade.
+export const TRADES_URL =
+  import.meta.env.VITE_TRADES_URL ||
+  'https://raw.githubusercontent.com/infiniteezverse/ez-up/main/services/zen-usdc-trader/state/trades.json';
+
 // Refresh intervals
 export const STATS_REFRESH_MS = 60_000;
 

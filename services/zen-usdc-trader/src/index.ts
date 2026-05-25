@@ -6,7 +6,8 @@ import { executeSwap } from "./executor.js";
 import { fetchZenPrice } from "./price.js";
 import { initialState, loadState, saveState } from "./state.js";
 import { recordSnapshot } from "./snapshot.js";
-import type { BotState, MarketData } from "./types.js";
+import { appendTrade } from "./ledger.js";
+import type { BotState, MarketData, TradeRecord } from "./types.js";
 import type { SafeguardContext } from "./engine.js";
 
 const DRY_RUN = process.env.DRY_RUN === "true";
@@ -119,6 +120,59 @@ async function tick(privateKey: string): Promise<void> {
 
   if (result.status === "success") {
     console.log(`  ✅ ${result.routingEngine} | buyAmount: ${result.buyAmount} | tx: ${result.txHash}`);
+
+    // Capture pre-update baseline so the ledger reflects the trigger price
+    const baselinePrice = decision.action === "SELL_ZEN" ? state.entryPrice : state.lastCycleHigh;
+
+    // Compute the trade's ZEN and USDC amounts in human units
+    const buyAmountHuman = result.buyAmount ? Number(result.buyAmount) : 0;
+    const zenAmount = decision.action === "SELL_ZEN" ? sellAmountHuman : buyAmountHuman;
+    const usdcAmount = decision.action === "SELL_ZEN" ? buyAmountHuman : sellAmountHuman;
+
+    // Compute new portfolio TVL right after the trade (estimate at decision price)
+    let zenAfter: number;
+    let usdcAfter: number;
+    if (decision.action === "SELL_ZEN") {
+      zenAfter = Number(balances.zen) / Math.pow(10, ZEN_DECIMALS) - zenAmount;
+      usdcAfter = Number(balances.usdc) / Math.pow(10, USDC_DECIMALS) + usdcAmount;
+    } else {
+      zenAfter = Number(balances.zen) / Math.pow(10, ZEN_DECIMALS) + zenAmount;
+      usdcAfter = Number(balances.usdc) / Math.pow(10, USDC_DECIMALS) - sellAmountHuman;
+    }
+    const tvlAfterUsd = zenAfter * price.priceUsd + usdcAfter;
+    const zenPctAfter = tvlAfterUsd > 0 ? (zenAfter * price.priceUsd) / tvlAfterUsd : 0;
+
+    // Append to public trade ledger (state/trades.json)
+    try {
+      const tradePartial: Omit<TradeRecord, "runningPnlUsd"> = {
+        id: state.totalTrades + 1,
+        timestamp: now,
+        side: decision.action as "SELL_ZEN" | "BUY_ZEN",
+        tier: decision.tier ?? 0,
+        baselinePrice,
+        decisionPrice: price.priceUsd,
+        zenAmount,
+        usdcAmount,
+        feeUsd: 0.03, // EZ-Path basic tier
+        notionalUsd: decision.notionalUsd ?? 0,
+        txHash: result.txHash,
+        routingEngine: result.routingEngine,
+        tvlAfterUsd,
+        zenPctAfter,
+      };
+      // Seed ledger with current pre-trade TVL the first time it's written
+      const preTvl = balances.zenValueUsd + balances.usdcValueUsd;
+      const recorded = await appendTrade({
+        trade: tradePartial,
+        currentInitialTvlUsd: preTvl,
+      });
+      console.log(
+        `📒 Trade #${recorded.id} logged → trades.json (running P&L: $${recorded.runningPnlUsd.toFixed(2)})`
+      );
+    } catch (err) {
+      console.error(`⚠️  Ledger write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     state.entryPrice = price.priceUsd;
     state.lastCycleHigh = price.priceUsd;
     state.lastTradeAt = now;

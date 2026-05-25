@@ -8,6 +8,7 @@ import {
   ZEN_PRICE_USD,
   USDC_PRICE_USD,
   HISTORY_URL,
+  TRADES_URL,
   STATS_REFRESH_MS,
   LINKS,
 } from '../config.js';
@@ -37,6 +38,128 @@ async function fetchHistory() {
   } catch {
     return null;
   }
+}
+
+async function fetchTrades() {
+  if (!TRADES_URL) return null;
+  try {
+    const res = await fetch(TRADES_URL);
+    if (!res.ok) return null; // 404 = no trades.json yet (bot hasn't traded)
+    const data = await res.json();
+    return data; // { initialTvlUsd, trades: [...] }
+  } catch {
+    return null;
+  }
+}
+
+function fmtTime(tsMs) {
+  const d = new Date(tsMs);
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function fmtSignedUsd(n) {
+  const sign = n >= 0 ? '+' : '';
+  return `${sign}${n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}`;
+}
+
+function RecentTradesCard({ ledger }) {
+  if (!ledger || !ledger.trades || ledger.trades.length === 0) {
+    return (
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-slate-100">Recent Trades</h3>
+          <span className="text-xs text-slate-500">No trades yet</span>
+        </div>
+        <p className="text-sm text-slate-500">
+          The bot is patient by design — it waits for ZEN to move ±4% from
+          baseline before any rebalance. Trades appear here automatically the
+          moment one fires.
+        </p>
+      </div>
+    );
+  }
+
+  const recent = [...ledger.trades].slice(-10).reverse(); // newest first
+  const realizedPnl = ledger.trades[ledger.trades.length - 1].runningPnlUsd;
+  const pnlPositive = realizedPnl >= 0;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-lg font-semibold text-slate-100">Recent Trades</h3>
+        <div className="text-xs text-slate-500">
+          <span>Realized P&amp;L: </span>
+          <span className={pnlPositive ? 'text-brand-green font-semibold' : 'text-red-400 font-semibold'}>
+            {fmtSignedUsd(realizedPnl)}
+          </span>
+          <span className="mx-2">·</span>
+          <span>{ledger.trades.length} lifetime trade{ledger.trades.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="py-2 pr-3">When</th>
+              <th className="py-2 pr-3">Side</th>
+              <th className="py-2 pr-3 text-right">Tier</th>
+              <th className="py-2 pr-3 text-right">Price</th>
+              <th className="py-2 pr-3 text-right">Notional</th>
+              <th className="py-2 text-right">Running P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800">
+            {recent.map((t) => {
+              const isSell = t.side === 'SELL_ZEN';
+              return (
+                <tr key={`${t.id}-${t.timestamp}`}>
+                  <td className="py-2 pr-3 text-slate-400">{fmtTime(t.timestamp)}</td>
+                  <td className="py-2 pr-3">
+                    <span
+                      className={
+                        isSell
+                          ? 'rounded bg-red-500/15 px-2 py-0.5 text-xs font-semibold text-red-300'
+                          : 'rounded bg-brand-green/15 px-2 py-0.5 text-xs font-semibold text-brand-green'
+                      }
+                    >
+                      {isSell ? 'SELL ZEN' : 'BUY ZEN'}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-right text-slate-400">{t.tier}</td>
+                  <td className="py-2 pr-3 text-right tabular-nums">${t.decisionPrice.toFixed(4)}</td>
+                  <td className="py-2 pr-3 text-right tabular-nums">${t.notionalUsd.toFixed(2)}</td>
+                  <td
+                    className={`py-2 text-right tabular-nums font-semibold ${
+                      t.runningPnlUsd >= 0 ? 'text-brand-green' : 'text-red-400'
+                    }`}
+                  >
+                    {fmtSignedUsd(t.runningPnlUsd)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Each trade is settled on Base via{' '}
+        <a
+          href={LINKS.ezPath}
+          target="_blank"
+          rel="noreferrer"
+          className="text-brand-cyan hover:underline"
+        >
+          EZ Path
+        </a>
+        . Running P&amp;L tracks TVL change since the first trade was recorded.
+      </p>
+    </div>
+  );
 }
 
 function Sparkline({ data, width = 600, height = 120 }) {
@@ -94,6 +217,7 @@ function MetricCard({ label, value, sub }) {
 export default function StrategyTracker() {
   const [live, setLive] = useState(null);     // { zen, usdc, zenPrice, tvl, zenPct, usdcPct }
   const [history, setHistory] = useState(null);
+  const [tradeLedger, setTradeLedger] = useState(null);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
 
@@ -101,11 +225,12 @@ export default function StrategyTracker() {
     let cancelled = false;
 
     async function load() {
-      const [zenRaw, usdcRaw, zenPriceLive, hist] = await Promise.all([
+      const [zenRaw, usdcRaw, zenPriceLive, hist, ledger] = await Promise.all([
         fetchTokenBalance(BOT_WALLET, ZEN_ADDRESS),
         fetchTokenBalance(BOT_WALLET, USDC_ADDRESS),
         fetchZenPriceUsd(),
         fetchHistory(),
+        fetchTrades(),
       ]);
       if (cancelled) return;
 
@@ -120,6 +245,7 @@ export default function StrategyTracker() {
 
       setLive({ zen, usdc, zenPrice, tvl, zenPct, usdcPct });
       setHistory(hist);
+      setTradeLedger(ledger);
       setLoading(false);
       setUpdatedAt(new Date());
     }
@@ -183,13 +309,17 @@ export default function StrategyTracker() {
             />
             <MetricCard
               label="Lifetime Trades"
-              value={totalTradesFromHistory ?? '—'}
+              value={
+                tradeLedger?.trades?.length ?? totalTradesFromHistory ?? '—'
+              }
               sub={
-                totalTradesFromHistory === null
-                  ? showWaiting
-                    ? 'Waiting for history feed'
-                    : 'Will appear after first snapshot'
-                  : 'Executed via EZ Path'
+                tradeLedger?.trades?.length
+                  ? 'Executed via EZ Path'
+                  : totalTradesFromHistory !== null
+                  ? 'Executed via EZ Path'
+                  : showWaiting
+                  ? 'Waiting for history feed'
+                  : 'Will appear after first snapshot'
               }
             />
           </div>
@@ -229,6 +359,9 @@ export default function StrategyTracker() {
               by the bot.
             </p>
           </div>
+
+          {/* Per-trade ledger */}
+          <RecentTradesCard ledger={tradeLedger} />
         </>
       )}
     </div>
