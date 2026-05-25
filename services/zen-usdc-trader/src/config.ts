@@ -16,14 +16,18 @@ export const configV3: Config = {
   minTradeNotional: 10,
   minTradeIntervalMs: 0,
   maxTradesPerDay: 8,
-  upsideBrackets: [0.04, 0.06, 0.08, 0.12],
-  downsideBrackets: [-0.04, -0.06, -0.08, -0.12],
-  // Tuned 2026-05-25: switched from baseline slices [5,5,10,15]% to
-  // aggressive profile [8,10,15,25]%. Backtest (90d) showed +9% alpha
-  // vs B&H with this config — vs +6.5% on baseline slices. Same brackets
-  // and safeguards; just larger position sizes on bigger moves.
-  upsideSlices: [0.08, 0.10, 0.15, 0.25],
-  downsideSlices: [0.08, 0.10, 0.15, 0.25],
+  // Tuned 2026-05-25 (v2): added 2% tier-1 for more frequent micro-
+  // rebalancing on common moves. Slices on log-geometric progression
+  // (~1.5x ratio per tier) so small triggers get small bites and large
+  // triggers get large bites. Existing safeguards (2-tick confirmation,
+  // trend filter, daily P&L stop) still apply.
+  //
+  // Trend filter (skip tier 1 if 24h move > 15%) now protects the
+  // 2% bracket from churning during strong trends.
+  upsideBrackets: [0.02, 0.04, 0.06, 0.08, 0.12],
+  downsideBrackets: [-0.02, -0.04, -0.06, -0.08, -0.12],
+  upsideSlices: [0.05, 0.075, 0.11, 0.17, 0.25],
+  downsideSlices: [0.05, 0.075, 0.11, 0.17, 0.25],
   enableVolFilter: false,
   minDailyVol: 0.05,
   enableVolumeFilter: false,
