@@ -18,8 +18,12 @@ export const configV3: Config = {
   maxTradesPerDay: 8,
   upsideBrackets: [0.04, 0.06, 0.08, 0.12],
   downsideBrackets: [-0.04, -0.06, -0.08, -0.12],
-  upsideSlices: [0.05, 0.05, 0.10, 0.15],
-  downsideSlices: [0.05, 0.05, 0.10, 0.15],
+  // Tuned 2026-05-25: switched from baseline slices [5,5,10,15]% to
+  // aggressive profile [8,10,15,25]%. Backtest (90d) showed +9% alpha
+  // vs B&H with this config — vs +6.5% on baseline slices. Same brackets
+  // and safeguards; just larger position sizes on bigger moves.
+  upsideSlices: [0.08, 0.10, 0.15, 0.25],
+  downsideSlices: [0.08, 0.10, 0.15, 0.25],
   enableVolFilter: false,
   minDailyVol: 0.05,
   enableVolumeFilter: false,
