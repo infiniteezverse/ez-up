@@ -110,6 +110,7 @@ export function decideActionV3(
         return {
           action: "SELL_ZEN",
           percentOfAsset: 0,
+          tier: idx + 1,
           reason: `Upside +${(upsideMove * 100).toFixed(2)}% tier ${idx + 1} signal; awaiting 2-tick confirmation.`,
         };
       }
@@ -153,6 +154,7 @@ export function decideActionV3(
         return {
           action: "BUY_ZEN",
           percentOfAsset: 0,
+          tier: idx + 1,
           reason: `Downside ${(downsideMove * 100).toFixed(2)}% tier ${idx + 1} signal; awaiting 2-tick confirmation.`,
         };
       }
