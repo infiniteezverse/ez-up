@@ -1,0 +1,39 @@
+# Environment variables (NEVER commit)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temp files
+*.tmp
+*.temp
+.tmp/
+
+# ============ STATE FILES (DO COMMIT) ============
+# These should be tracked in Git for transparency
+# !state/
+# !state/v2-state.json
+# !state/history.json
+# !state/trades.json

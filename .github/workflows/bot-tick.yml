@@ -1,0 +1,54 @@
+name: EZ Up Bot Trading Tick
+
+on:
+  schedule:
+    # Run every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  trading-tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        working-directory: services/zen-eth-usdc-executor
+        run: npm install
+
+      - name: Compile TypeScript
+        working-directory: services/zen-eth-usdc-executor
+        run: npm run build
+
+      - name: Run Bot Tick
+        working-directory: services/zen-eth-usdc-executor
+        env:
+          TRADER_PRIVATE_KEY: ${{ secrets.TRADER_PRIVATE_KEY }}
+          BOT_WALLET: ${{ secrets.BOT_WALLET }}
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: npm run tick
+
+      - name: Commit and push state
+        if: success()
+        run: |
+          git config user.name "EZ Up Bot"
+          git config user.email "bot@infiniteezverse.xyz"
+          git add services/zen-eth-usdc-executor/state/
+          git commit -m "🤖 Bot Tick: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || true
+          git push
+
+      - name: Log failure
+        if: failure()
+        run: |
+          echo "❌ Bot tick failed - check logs above"
+          exit 1
