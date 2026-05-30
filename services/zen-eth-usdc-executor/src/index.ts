@@ -301,13 +301,4 @@ export async function runBotTick(): Promise<void> {
   }
 }
 
-// ============ ENTRY POINT ============
-// Run once if executed directly
-if (require.main === module) {
-  runBotTick().catch(err => {
-    console.error('Uncaught error:', err);
-    process.exit(1);
-  });
-}
-
 export default runBotTick;
