@@ -153,6 +153,30 @@ async function startPriceMonitor(): Promise<void> {
         console.log(`[price-monitor] ✓ ETH: No bracket breach`);
       }
 
+      // ============ UPDATE STATE WITH CURRENT PRICES ============
+      // Initialize entry prices on first run
+      if (state.pairs['ZEN_USDC'].entryPrice === 0) {
+        state.pairs['ZEN_USDC'].entryPrice = marketData.zen.currentPrice;
+        console.log(`[price-monitor] 📍 ZEN entry price set: $${marketData.zen.currentPrice.toFixed(2)}`);
+      }
+      if (state.pairs['ETH_USDC'].entryPrice === 0) {
+        state.pairs['ETH_USDC'].entryPrice = marketData.eth.currentPrice;
+        console.log(`[price-monitor] 📍 ETH entry price set: $${marketData.eth.currentPrice.toFixed(2)}`);
+      }
+
+      // Update cycle highs
+      state.pairs['ZEN_USDC'].lastCycleHigh = Math.max(
+        state.pairs['ZEN_USDC'].lastCycleHigh || 0,
+        marketData.zen.currentPrice
+      );
+      state.pairs['ETH_USDC'].lastCycleHigh = Math.max(
+        state.pairs['ETH_USDC'].lastCycleHigh || 0,
+        marketData.eth.currentPrice
+      );
+
+      // PERSIST STATE TO DISK
+      saveStateV2(state);
+
       // Check if we should abort on too many errors
       if (consecutiveErrors >= MAX_RETRIES) {
         console.error(`[price-monitor] ❌ Too many consecutive errors (${consecutiveErrors}), stopping monitor`);
