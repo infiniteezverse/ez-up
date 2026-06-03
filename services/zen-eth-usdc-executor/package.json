@@ -16,6 +16,7 @@
   "dependencies": {
     "@types/express": "^5.0.6",
     "dotenv": "^16.3.1",
+    "ethers": "^6.16.0",
     "express": "^5.2.1",
     "viem": "^2.8.0"
   },
