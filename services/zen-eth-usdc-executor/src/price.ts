@@ -25,7 +25,7 @@ const TOKEN_DECIMALS = {
 
 // Uniswap V2 on Base
 const UNISWAP_V2 = {
-  FACTORY: '0x8909Dc15e40EB4B8e6f7726AE55D432e5f81F138',
+  FACTORY: '0x8909dc15e40eb4b8e6f7726ae55d432e5f81f138', // Lowercase to avoid checksum validation
   PAIR_ABI: ['function getReserves() public view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)'],
 };
 
@@ -153,7 +153,7 @@ async function getUniswapPoolAddress(token0: string, token1: string): Promise<st
     const calldata = SELECTOR + token0Padded + token1Padded;
 
     const result = await rpcProvider.call({
-      to: UNISWAP_V2.FACTORY,
+      to: UNISWAP_V2.FACTORY.toLowerCase(),
       data: calldata,
     });
 
