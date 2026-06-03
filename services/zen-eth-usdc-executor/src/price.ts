@@ -145,8 +145,11 @@ async function getUniswapPoolAddress(token0: string, token1: string): Promise<st
   try {
     // getPair(address,address) selector
     const SELECTOR = '0xe34f7eb3';
-    const token0Padded = token0.slice(2).padStart(64, '0');
-    const token1Padded = token1.slice(2).padStart(64, '0');
+    // Lowercase addresses to avoid checksum errors
+    const token0Lower = token0.toLowerCase();
+    const token1Lower = token1.toLowerCase();
+    const token0Padded = token0Lower.slice(2).padStart(64, '0');
+    const token1Padded = token1Lower.slice(2).padStart(64, '0');
     const calldata = SELECTOR + token0Padded + token1Padded;
 
     const result = await rpcProvider.call({
