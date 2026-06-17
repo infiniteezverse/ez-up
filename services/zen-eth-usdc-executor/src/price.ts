@@ -1,5 +1,4 @@
 import { MarketData, AssetPair } from './types';
-import { EZPathClient } from 'plugin-ezpath';
 
 // Token addresses on Base
 const TOKEN_ADDRESSES = {
@@ -15,75 +14,105 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
-// EZ-Path client for best DEX quotes (races 10 venues on Base)
-const TRADER_PRIVATE_KEY = process.env.TRADER_PRIVATE_KEY;
-if (!TRADER_PRIVATE_KEY) {
-  console.error('TRADER_PRIVATE_KEY not set in .env');
-  process.exit(1);
-}
-
-const ezpathClient = new EZPathClient(TRADER_PRIVATE_KEY);
+// EZ-Path endpoint (free probe, no payment required)
+const EZPATH_ENDPOINT = 'https://ezpath.myezverse.xyz/api/v1/quote';
 
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
 
+interface EZPathProbeResponse {
+  buyAmount: string;
+  price: string;
+  sources?: Array<{
+    name: string;
+    proportion: string;
+  }>;
+}
+
 /**
- * Fetch ZEN price using EZ-Path (races 10 DEX venues on Base)
- * Query: 1 USDC → ZEN, derive price from buyAmount
+ * Fetch price using EZ-Path free probe (no payment required)
+ * Races 10 DEX venues and returns best execution
  */
-async function fetchZENPriceFromEZPath(): Promise<number | null> {
+async function fetchPriceFromEZPath(
+  sellToken: string,
+  buyToken: string,
+  sellAmount: string,
+  label: string
+): Promise<number | null> {
   try {
-    console.log('[price.ts] Querying EZ-Path for ZEN/USDC quote...');
+    const url = new URL(EZPATH_ENDPOINT);
+    url.searchParams.set('sellToken', sellToken);
+    url.searchParams.set('buyToken', buyToken);
+    url.searchParams.set('sellAmount', sellAmount);
 
-    // Get quote: 1 USDC → ZEN (via basic tier, $0.03)
-    const quote = await ezpathClient.getQuote({
-      sellToken: TOKEN_ADDRESSES.USDC,
-      buyToken: TOKEN_ADDRESSES.ZEN,
-      sellAmount: '1000000', // 1 USDC (6 decimals)
-      tier: 'basic', // $0.03 per quote
-    });
+    console.log(`[price.ts] Probing EZ-Path for ${label}...`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(url.toString(), { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
 
-    const zenPerUsdc = Number(quote.buyAmount) / Math.pow(10, TOKEN_DECIMALS.ZEN);
+    if (!res.ok) {
+      console.warn(`[price.ts] EZ-Path probe returned ${res.status}`);
+      return null;
+    }
 
-    console.log(`[price.ts] ✓ ZEN price from EZ-Path: $${zenPerUsdc.toFixed(4)}`);
-    console.log(`[price.ts] Best venues: ${quote.sources?.map((s: any) => `${s.name} (${s.proportion})`).join(', ') || 'N/A'}`);
+    const data = (await res.json()) as EZPathProbeResponse;
+    const price = parseFloat(data.price);
 
-    lastZENPrice = zenPerUsdc;
-    return zenPerUsdc;
+    if (isNaN(price) || price <= 0) {
+      console.warn(`[price.ts] Invalid price from EZ-Path: ${data.price}`);
+      return null;
+    }
+
+    console.log(`[price.ts] ✓ ${label}: $${price.toFixed(4)}`);
+    if (data.sources) {
+      const venues = data.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
+      console.log(`[price.ts]   Best venues: ${venues}`);
+    }
+
+    return price;
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path ZEN quote failed:`, err);
+    console.warn(`[price.ts] EZ-Path probe failed for ${label}:`, err);
     return null;
   }
 }
 
 /**
- * Fetch ETH price using EZ-Path (races 10 DEX venues on Base)
- * Query: 1 USDC → ETH, derive price from buyAmount
+ * Fetch ZEN price using EZ-Path free probe
+ * Query: 1 USDC → ZEN
+ */
+async function fetchZENPriceFromEZPath(): Promise<number | null> {
+  const price = await fetchPriceFromEZPath(
+    TOKEN_ADDRESSES.USDC,
+    TOKEN_ADDRESSES.ZEN,
+    '1000000', // 1 USDC (6 decimals)
+    'ZEN/USDC'
+  );
+
+  if (price) {
+    lastZENPrice = price;
+  }
+
+  return price;
+}
+
+/**
+ * Fetch ETH price using EZ-Path free probe
+ * Query: 1 USDC → ETH
  */
 async function fetchETHPriceFromEZPath(): Promise<number | null> {
-  try {
-    console.log('[price.ts] Querying EZ-Path for ETH/USDC quote...');
+  const price = await fetchPriceFromEZPath(
+    TOKEN_ADDRESSES.USDC,
+    TOKEN_ADDRESSES.ETH,
+    '1000000', // 1 USDC (6 decimals)
+    'ETH/USDC'
+  );
 
-    // Get quote: 1 USDC → ETH (via basic tier, $0.03)
-    const quote = await ezpathClient.getQuote({
-      sellToken: TOKEN_ADDRESSES.USDC,
-      buyToken: TOKEN_ADDRESSES.ETH,
-      sellAmount: '1000000', // 1 USDC (6 decimals)
-      tier: 'basic', // $0.03 per quote
-    });
-
-    const ethPerUsdc = Number(quote.buyAmount) / Math.pow(10, TOKEN_DECIMALS.ETH);
-
-    console.log(`[price.ts] ✓ ETH price from EZ-Path: $${ethPerUsdc.toFixed(4)}`);
-    console.log(`[price.ts] Best venues: ${quote.sources?.map((s: any) => `${s.name} (${s.proportion})`).join(', ') || 'N/A'}`);
-
-    lastETHPrice = ethPerUsdc;
-    return ethPerUsdc;
-  } catch (err) {
-    console.warn(`[price.ts] EZ-Path ETH quote failed:`, err);
-    return null;
+  if (price) {
+    lastETHPrice = price;
   }
+
+  return price;
 }
 
 /**
@@ -97,13 +126,13 @@ export async function fetchMarketDataZEN(
 ): Promise<MarketData | null> {
   let currentPrice: number | null = null;
 
-  // Try EZ-Path for primary source
-  console.log('[price.ts] Fetching ZEN price: trying EZ-Path...');
+  // Try EZ-Path free probe for primary source
+  console.log('[price.ts] Fetching ZEN price: trying EZ-Path (free probe)...');
   currentPrice = await fetchZENPriceFromEZPath();
 
   // Use cached price if EZ-Path fails
   if (!currentPrice) {
-    console.warn(`[price.ts] EZ-Path failed, using cached price: $${lastZENPrice.toFixed(2)}`);
+    console.warn(`[price.ts] EZ-Path unavailable, using cached price: $${lastZENPrice.toFixed(2)}`);
     currentPrice = lastZENPrice;
   }
 
@@ -138,13 +167,13 @@ export async function fetchMarketDataETH(
 ): Promise<MarketData | null> {
   let currentPrice: number | null = null;
 
-  // Try EZ-Path for primary source
-  console.log('[price.ts] Fetching ETH price: trying EZ-Path...');
+  // Try EZ-Path free probe for primary source
+  console.log('[price.ts] Fetching ETH price: trying EZ-Path (free probe)...');
   currentPrice = await fetchETHPriceFromEZPath();
 
   // Use cached price if EZ-Path fails
   if (!currentPrice) {
-    console.warn(`[price.ts] EZ-Path failed, using cached price: $${lastETHPrice.toFixed(2)}`);
+    console.warn(`[price.ts] EZ-Path unavailable, using cached price: $${lastETHPrice.toFixed(2)}`);
     currentPrice = lastETHPrice;
   }
 
@@ -169,8 +198,8 @@ export async function fetchMarketDataETH(
 }
 
 /**
- * Batch fetch market data for both ZEN and ETH (parallel via EZ-Path)
- * Uses EZ-Path basic tier ($0.03 per quote) for best-execution pricing
+ * Batch fetch market data for both ZEN and ETH (parallel via EZ-Path free probe)
+ * No cost: uses free EZ-Path probe endpoint
  */
 export async function fetchMarketDataBatch(
   zenBalance: bigint,
@@ -189,7 +218,7 @@ export async function fetchMarketDataBatch(
 }
 
 /**
- * Fetch fallback prices (cached from last successful EZ-Path query)
+ * Fetch fallback prices (cached from last successful EZ-Path probe)
  */
 export function getFallbackPrices(): {
   zenPrice: number;
