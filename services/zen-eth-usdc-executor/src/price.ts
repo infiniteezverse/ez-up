@@ -145,7 +145,8 @@ async function getUniswapPoolAddress(token0: string, token1: string): Promise<st
   try {
     // Use Contract interface instead of raw RPC call—handles encoding automatically
     const factoryAbi = ['function getPair(address tokenA, address tokenB) external view returns (address pair)'];
-    const factory = new ethers.Contract(UNISWAP_V2.FACTORY, factoryAbi, rpcProvider);
+    const factoryAddress = ethers.getAddress(UNISWAP_V2.FACTORY); // Normalize checksum
+    const factory = new ethers.Contract(factoryAddress, factoryAbi, rpcProvider);
 
     const poolAddress = await factory.getPair(token0, token1);
 
