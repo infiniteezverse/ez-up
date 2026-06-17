@@ -14,16 +14,16 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
+// CoinGecko API IDs
+const COINGECKO_IDS = {
+  ZEN: 'zenith',
+  ETH: 'ethereum',
+};
+
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
 let toolsCache: any = null;
-
-interface EZPathProbeResponse {
-  cost: string;
-  tier: string;
-  description?: string;
-}
 
 interface EZPathQuoteResponse {
   buyAmount: string;
@@ -54,53 +54,67 @@ async function getEZPathTools() {
 }
 
 /**
- * Fetch price using EZ-Path MCP
- * Step 1: Call probe (free) to check cost
- * Step 2: Call quote (paid) to get actual price
+ * Fetch price from CoinGecko (free, for bracket detection)
  */
-async function fetchPriceFromEZPath(
+async function fetchPriceFromCoinGecko(
+  tokenId: string,
+  label: string
+): Promise<number | null> {
+  try {
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(url, { signal: controller.signal }).finally(() =>
+      clearTimeout(timeoutId)
+    );
+
+    if (!res.ok) {
+      console.warn(`[price.ts] CoinGecko returned ${res.status} for ${label}`);
+      return null;
+    }
+
+    const data = (await res.json()) as any;
+    const price = data[tokenId]?.usd;
+
+    if (!price || price <= 0) {
+      console.warn(`[price.ts] Invalid price from CoinGecko for ${label}`);
+      return null;
+    }
+
+    console.log(`[price.ts] ✓ ${label} (CoinGecko): $${price.toFixed(4)}`);
+    return price;
+  } catch (err) {
+    console.warn(`[price.ts] CoinGecko query failed for ${label}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Fetch confirmed price from EZ-Path via x402 quote (paid, for execution only)
+ * Called when bracket breach is detected, to confirm price before trading
+ */
+export async function fetchConfirmedQuoteFromEZPath(
   sellToken: string,
   buyToken: string,
   sellAmount: string,
   label: string
-): Promise<number | null> {
+): Promise<EZPathQuoteResponse | null> {
   try {
     const tools = await getEZPathTools();
     if (!tools) {
-      console.warn('[price.ts] EZ-Path tools unavailable');
+      console.warn('[price.ts] EZ-Path tools unavailable for confirmed quote');
       return null;
     }
 
-    console.log(`[price.ts] Probing EZ-Path for ${label}...`);
+    console.log(`[price.ts] Requesting confirmed quote from EZ-Path for ${label}...`);
 
-    // Step 1: Probe (free) - check cost and availability
-    let probeResult: EZPathProbeResponse;
-    try {
-      probeResult = await tools.ezpath_probe({
-        sellToken,
-        buyToken,
-        sellAmount,
-      });
-      console.log(`[price.ts] ✓ Probe OK: cost=${probeResult.cost}, tier=${probeResult.tier}`);
-    } catch (err) {
-      console.warn(`[price.ts] Probe failed for ${label}:`, err);
-      return null;
-    }
-
-    // Step 2: Quote (paid) - get actual price with x402 payment
-    console.log(`[price.ts] Requesting quote for ${label} (tier: ${probeResult.tier})...`);
-    let quoteResult: EZPathQuoteResponse;
-    try {
-      quoteResult = await tools.ezpath_quote({
-        sellToken,
-        buyToken,
-        sellAmount,
-        tier: probeResult.tier || 'basic',
-      });
-    } catch (err) {
-      console.warn(`[price.ts] Quote failed for ${label}:`, err);
-      return null;
-    }
+    const quoteResult: EZPathQuoteResponse = await tools.ezpath_quote({
+      sellToken,
+      buyToken,
+      sellAmount,
+      tier: 'basic',
+    });
 
     const price = parseFloat(quoteResult.price);
 
@@ -109,32 +123,51 @@ async function fetchPriceFromEZPath(
       return null;
     }
 
-    console.log(`[price.ts] ✓ ${label}: $${price.toFixed(4)}`);
+    console.log(`[price.ts] ✓ Confirmed ${label}: $${price.toFixed(4)}`);
     if (quoteResult.sources) {
       const venues = quoteResult.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
       console.log(`[price.ts]   Venues: ${venues}`);
     }
 
-    return price;
+    return quoteResult;
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path query failed for ${label}:`, err);
+    console.warn(`[price.ts] EZ-Path confirmed quote failed for ${label}:`, err);
     return null;
   }
 }
 
 /**
- * Fetch ZEN price using EZ-Path
- * Query: 1 USDC → ZEN
+ * Fetch price for bracket detection (free CoinGecko, falls back to cached)
  */
-async function fetchZENPriceFromEZPath(): Promise<number | null> {
-  const price = await fetchPriceFromEZPath(
-    TOKEN_ADDRESSES.USDC,
-    TOKEN_ADDRESSES.ZEN,
-    '1000000', // 1 USDC (6 decimals)
-    'ZEN/USDC'
+async function fetchPriceForBracketDetection(
+  tokenId: string,
+  label: string,
+  fallbackPrice: number
+): Promise<number> {
+  // Try CoinGecko first (free)
+  const coingeckoPrice = await fetchPriceFromCoinGecko(tokenId, label);
+  if (coingeckoPrice) {
+    return coingeckoPrice;
+  }
+
+  // Fall back to last known price
+  console.warn(
+    `[price.ts] CoinGecko unavailable for ${label}, using cached price: $${fallbackPrice.toFixed(2)}`
+  );
+  return fallbackPrice;
+}
+
+/**
+ * Fetch ZEN price for bracket detection (free via CoinGecko)
+ */
+async function fetchZENPrice(): Promise<number> {
+  const price = await fetchPriceForBracketDetection(
+    COINGECKO_IDS.ZEN,
+    'ZEN/USDC',
+    lastZENPrice
   );
 
-  if (price) {
+  if (price > 0) {
     lastZENPrice = price;
   }
 
@@ -142,18 +175,16 @@ async function fetchZENPriceFromEZPath(): Promise<number | null> {
 }
 
 /**
- * Fetch ETH price using EZ-Path
- * Query: 1 USDC → ETH
+ * Fetch ETH price for bracket detection (free via CoinGecko)
  */
-async function fetchETHPriceFromEZPath(): Promise<number | null> {
-  const price = await fetchPriceFromEZPath(
-    TOKEN_ADDRESSES.USDC,
-    TOKEN_ADDRESSES.ETH,
-    '1000000', // 1 USDC (6 decimals)
-    'ETH/USDC'
+async function fetchETHPrice(): Promise<number> {
+  const price = await fetchPriceForBracketDetection(
+    COINGECKO_IDS.ETH,
+    'ETH/USDC',
+    lastETHPrice
   );
 
-  if (price) {
+  if (price > 0) {
     lastETHPrice = price;
   }
 
@@ -161,7 +192,8 @@ async function fetchETHPriceFromEZPath(): Promise<number | null> {
 }
 
 /**
- * Fetch complete market data for ZEN/USDC pair using EZ-Path
+ * Fetch complete market data for ZEN/USDC pair
+ * Uses free CoinGecko for bracket detection
  * @param zenBalance Raw ZEN balance (wei/atomic units)
  * @param usdcBalance Raw USDC balance (wei/atomic units)
  */
@@ -169,17 +201,8 @@ export async function fetchMarketDataZEN(
   zenBalance: bigint,
   usdcBalance: bigint
 ): Promise<MarketData | null> {
-  let currentPrice: number | null = null;
-
-  // Try EZ-Path with x402 payment for primary source
-  console.log('[price.ts] Fetching ZEN price: trying EZ-Path (x402 signed)...');
-  currentPrice = await fetchZENPriceFromEZPath();
-
-  // Use cached price if EZ-Path fails
-  if (!currentPrice) {
-    console.warn(`[price.ts] EZ-Path unavailable, using cached price: $${lastZENPrice.toFixed(2)}`);
-    currentPrice = lastZENPrice;
-  }
+  console.log('[price.ts] Fetching ZEN price via CoinGecko (free)...');
+  const currentPrice = await fetchZENPrice();
 
   const zenValueUsd = (Number(zenBalance) / 10 ** TOKEN_DECIMALS.ZEN) * currentPrice;
   const usdcValueUsd = Number(usdcBalance) / 10 ** TOKEN_DECIMALS.USDC;
@@ -202,7 +225,8 @@ export async function fetchMarketDataZEN(
 }
 
 /**
- * Fetch complete market data for ETH/USDC pair using EZ-Path
+ * Fetch complete market data for ETH/USDC pair
+ * Uses free CoinGecko for bracket detection
  * @param ethBalance Raw ETH (WETH) balance (wei)
  * @param usdcBalance Raw USDC balance (wei)
  */
@@ -210,17 +234,8 @@ export async function fetchMarketDataETH(
   ethBalance: bigint,
   usdcBalance: bigint
 ): Promise<MarketData | null> {
-  let currentPrice: number | null = null;
-
-  // Try EZ-Path with x402 payment for primary source
-  console.log('[price.ts] Fetching ETH price: trying EZ-Path (x402 signed)...');
-  currentPrice = await fetchETHPriceFromEZPath();
-
-  // Use cached price if EZ-Path fails
-  if (!currentPrice) {
-    console.warn(`[price.ts] EZ-Path unavailable, using cached price: $${lastETHPrice.toFixed(2)}`);
-    currentPrice = lastETHPrice;
-  }
+  console.log('[price.ts] Fetching ETH price via CoinGecko (free)...');
+  const currentPrice = await fetchETHPrice();
 
   const ethValueUsd = (Number(ethBalance) / 10 ** TOKEN_DECIMALS.ETH) * currentPrice;
   const usdcValueUsd = Number(usdcBalance) / 10 ** TOKEN_DECIMALS.USDC;
@@ -262,7 +277,31 @@ export async function fetchMarketDataBatch(
 }
 
 /**
- * Fetch fallback prices (cached from last successful EZ-Path query)
+ * Get confirmed ZEN price from EZ-Path for execution (called only when breach detected)
+ */
+export async function getConfirmedZENPrice(): Promise<EZPathQuoteResponse | null> {
+  return await fetchConfirmedQuoteFromEZPath(
+    TOKEN_ADDRESSES.USDC,
+    TOKEN_ADDRESSES.ZEN,
+    '1000000', // 1 USDC (6 decimals)
+    'ZEN/USDC (execution)'
+  );
+}
+
+/**
+ * Get confirmed ETH price from EZ-Path for execution (called only when breach detected)
+ */
+export async function getConfirmedETHPrice(): Promise<EZPathQuoteResponse | null> {
+  return await fetchConfirmedQuoteFromEZPath(
+    TOKEN_ADDRESSES.USDC,
+    TOKEN_ADDRESSES.ETH,
+    '1000000', // 1 USDC (6 decimals)
+    'ETH/USDC (execution)'
+  );
+}
+
+/**
+ * Fetch fallback prices (cached from last successful CoinGecko query)
  */
 export function getFallbackPrices(): {
   zenPrice: number;
