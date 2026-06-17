@@ -143,27 +143,18 @@ async function fetchZENPriceViaETH(): Promise<number | null> {
  */
 async function getUniswapPoolAddress(token0: string, token1: string): Promise<string | null> {
   try {
-    // getPair(address,address) selector
-    const SELECTOR = '0xe34f7eb3';
-    // Lowercase addresses to avoid checksum errors
-    const token0Lower = token0.toLowerCase();
-    const token1Lower = token1.toLowerCase();
-    const token0Padded = token0Lower.slice(2).padStart(64, '0');
-    const token1Padded = token1Lower.slice(2).padStart(64, '0');
-    const calldata = SELECTOR + token0Padded + token1Padded;
+    // Use Contract interface instead of raw RPC call—handles encoding automatically
+    const factoryAbi = ['function getPair(address tokenA, address tokenB) external view returns (address pair)'];
+    const factory = new ethers.Contract(UNISWAP_V2.FACTORY, factoryAbi, rpcProvider);
 
-    const result = await rpcProvider.call({
-      to: UNISWAP_V2.FACTORY.toLowerCase(),
-      data: calldata,
-    });
-
-    // Parse address from result (last 20 bytes = 40 hex chars)
-    const poolAddress = '0x' + result.slice(-40);
+    const poolAddress = await factory.getPair(token0, token1);
 
     if (poolAddress === ethers.ZeroAddress) {
+      console.log(`[price.ts] No pool exists for ${token0.slice(0, 6)}.../${token1.slice(0, 6)}...`);
       return null;
     }
 
+    console.log(`[price.ts] ✓ Found pool: ${poolAddress}`);
     return poolAddress;
   } catch (err) {
     console.warn(`[price.ts] Pool lookup failed:`, err);
