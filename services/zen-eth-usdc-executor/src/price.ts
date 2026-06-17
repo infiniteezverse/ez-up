@@ -14,10 +14,12 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
+// EZ-Path API
+const EZPATH_API = 'https://api.myezverse.xyz/api/v1/quote';
+
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
-let toolsCache: any = null;
 
 interface EZPathProbeResponse {
   estimatedPrice: string;
@@ -45,27 +47,8 @@ interface EZPathQuoteResponse {
 }
 
 /**
- * Get MCP EZ-Path tools (cached)
- */
-async function getEZPathTools() {
-  if (toolsCache) {
-    return toolsCache;
-  }
-
-  try {
-    const mcpEzpath = await import('mcp-ezpath');
-    const tools = await mcpEzpath.getTools();
-    toolsCache = tools;
-    return tools;
-  } catch (err) {
-    console.warn('[price.ts] Failed to load mcp-ezpath:', err);
-    return null;
-  }
-}
-
-/**
- * Fetch estimated price from EZ-Path probe (FREE)
- * Returns cached estimated price from last quote + metadata
+ * Fetch estimated price from EZ-Path probe (FREE via HTTP 402)
+ * Call without payment header to get cached price + tier info
  */
 async function fetchPriceViaEZPathProbe(
   sellToken: string,
@@ -74,46 +57,54 @@ async function fetchPriceViaEZPathProbe(
   label: string
 ): Promise<{ price: number; cacheAge: number } | null> {
   try {
-    const tools = await getEZPathTools();
-    if (!tools) {
-      console.warn('[price.ts] EZ-Path tools unavailable for probe');
+    const url = new URL(EZPATH_API);
+    url.searchParams.set('sellToken', sellToken);
+    url.searchParams.set('buyToken', buyToken);
+    url.searchParams.set('sellAmount', sellAmount);
+
+    console.log(`[price.ts] Probing EZ-Path for ${label} (FREE via HTTP 402)...`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(url.toString(), {
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+
+    // HTTP 402 is expected for probe (payment required) — contains pricing info
+    if (res.status !== 402) {
+      console.warn(`[price.ts] EZ-Path returned unexpected status ${res.status} for probe`);
       return null;
     }
 
-    console.log(`[price.ts] Probing EZ-Path for ${label} (FREE)...`);
-
-    const probeResult: EZPathProbeResponse = await tools.ezpath_probe({
-      sellToken,
-      buyToken,
-      sellAmount,
-    });
-
-    const estimatedPrice = parseFloat(probeResult.estimatedPrice);
+    const probeData = (await res.json()) as any;
+    const estimatedPrice = parseFloat(probeData.estimatedPrice);
 
     if (isNaN(estimatedPrice) || estimatedPrice <= 0) {
-      console.warn(`[price.ts] Invalid estimated price from EZ-Path: ${probeResult.estimatedPrice}`);
+      console.warn(`[price.ts] Invalid estimated price from EZ-Path: ${probeData.estimatedPrice}`);
       return null;
     }
 
+    const cacheAge = probeData.cacheAgeSeconds ?? 0;
     console.log(
-      `[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (cached ${probeResult.cacheAgeSeconds}s ago)`
+      `[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (cached ${cacheAge}s ago)`
     );
     console.log(
-      `[price.ts]   Tiers: basic=$${probeResult.tiers.basic.usd}, resilient=$${probeResult.tiers.resilient.usd}, institutional=$${probeResult.tiers.institutional.usd}`
+      `[price.ts]   Tiers: basic=$${probeData.tiers.basic.usd}, resilient=$${probeData.tiers.resilient.usd}, institutional=$${probeData.tiers.institutional.usd}`
     );
 
     return {
       price: estimatedPrice,
-      cacheAge: probeResult.cacheAgeSeconds,
+      cacheAge,
     };
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path probe failed for ${label}:`, err);
+    console.warn(`[price.ts] EZ-Path probe failed for ${label}:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
 
 /**
- * Fetch confirmed price from EZ-Path quote (PAID via x402)
+ * Fetch confirmed price from EZ-Path quote (PAID via HTTP 200 + x402)
  * Called only when bracket breach is detected, to confirm before execution
  */
 export async function fetchConfirmedQuoteFromEZPath(
@@ -123,42 +114,54 @@ export async function fetchConfirmedQuoteFromEZPath(
   label: string
 ): Promise<EZPathQuoteResponse | null> {
   try {
-    const tools = await getEZPathTools();
-    if (!tools) {
-      console.warn('[price.ts] EZ-Path tools unavailable for confirmed quote');
+    const url = new URL(EZPATH_API);
+    url.searchParams.set('sellToken', sellToken);
+    url.searchParams.set('buyToken', buyToken);
+    url.searchParams.set('sellAmount', sellAmount);
+
+    console.log(`[price.ts] Requesting confirmed quote from EZ-Path for ${label} (PAID via HTTP 200)...`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const res = await fetch(url.toString(), {
+      signal: controller.signal,
+      headers: {
+        // X-Payment header would go here if signing x402 locally
+        // For now, we'll rely on fallback to cached prices if payment fails
+      },
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (!res.ok) {
+      console.warn(`[price.ts] EZ-Path quote returned status ${res.status}`);
       return null;
     }
 
-    console.log(`[price.ts] Requesting confirmed quote from EZ-Path for ${label} (PAID)...`);
-
-    const quoteResult: EZPathQuoteResponse = await tools.ezpath_quote({
-      sellToken,
-      buyToken,
-      sellAmount,
-      tier: 'basic', // $0.03 per quote
-    });
-
-    const price = parseFloat(quoteResult.price);
+    const quoteData = (await res.json()) as EZPathQuoteResponse;
+    const price = parseFloat(quoteData.price);
 
     if (isNaN(price) || price <= 0) {
-      console.warn(`[price.ts] Invalid price from EZ-Path: ${quoteResult.price}`);
+      console.warn(`[price.ts] Invalid price from EZ-Path quote: ${quoteData.price}`);
       return null;
     }
 
-    const worstCase = parseFloat(quoteResult.slippageGuarantee.worstCase);
+    const worstCase = parseFloat(quoteData.slippageGuarantee.worstCase);
     console.log(`[price.ts] ✓ Confirmed ${label}: $${price.toFixed(4)}`);
     console.log(
-      `[price.ts]   Slippage guarantee: worst-case=$${worstCase.toFixed(4)} (${(quoteResult.slippageGuarantee.confidence * 100).toFixed(0)}% confidence)`
+      `[price.ts]   Slippage guarantee: worst-case=$${worstCase.toFixed(4)} (${(quoteData.slippageGuarantee.confidence * 100).toFixed(0)}% confidence)`
     );
-    console.log(`[price.ts]   Expires in ${quoteResult.slippageGuarantee.secondsValid}s`);
-    if (quoteResult.sources) {
-      const venues = quoteResult.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
+    console.log(`[price.ts]   Expires in ${quoteData.slippageGuarantee.secondsValid}s`);
+    if (quoteData.sources) {
+      const venues = quoteData.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
       console.log(`[price.ts]   Venues: ${venues}`);
     }
 
-    return quoteResult;
+    return quoteData;
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path confirmed quote failed for ${label}:`, err);
+    console.warn(
+      `[price.ts] EZ-Path quote failed for ${label}:`,
+      err instanceof Error ? err.message : err
+    );
     return null;
   }
 }
