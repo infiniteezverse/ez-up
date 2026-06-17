@@ -1,4 +1,5 @@
 import { MarketData, AssetPair } from './types';
+import { ethers } from 'ethers';
 
 // Token addresses on Base
 const TOKEN_ADDRESSES = {
@@ -14,12 +15,20 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
-// EZ-Path endpoint (free probe, no payment required)
+// EZ-Path endpoint and config
 const EZPATH_ENDPOINT = 'https://ezpath.myezverse.xyz/api/v1/quote';
+const EZPATH_TOLL_ADDRESS = '0x13dde704389b1118b20d2bcc6d3ace749600e2ad';
+const QUOTE_COST_USDC = '30000'; // $0.03 in atomic units (6 decimals)
+const BASE_CHAIN_ID = 8453; // Base mainnet chain ID
+
+// Trader wallet for signing x402 payments
+const TRADER_PRIVATE_KEY = process.env.TRADER_PRIVATE_KEY;
+const wallet = TRADER_PRIVATE_KEY ? new ethers.Wallet(TRADER_PRIVATE_KEY) : null;
 
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
+let nonceCounter = 0; // Simple nonce to prevent replay attacks
 
 interface EZPathProbeResponse {
   buyAmount: string;
@@ -31,7 +40,65 @@ interface EZPathProbeResponse {
 }
 
 /**
- * Fetch price using EZ-Path free probe (no payment required)
+ * Create x402 signed payment authorization using EIP-712
+ * Signs a payment message with the trader's private key
+ */
+async function createX402PaymentHeader(): Promise<string | null> {
+  if (!wallet) {
+    console.warn('[price.ts] No TRADER_PRIVATE_KEY, cannot sign x402 payment');
+    return null;
+  }
+
+  try {
+    // Simple nonce to prevent replay (in production, should query on-chain)
+    nonceCounter++;
+    const nonce = nonceCounter.toString();
+
+    // EIP-712 Domain
+    const domain = {
+      name: 'EZ-Path',
+      version: '1',
+      chainId: BASE_CHAIN_ID,
+      verifyingContract: EZPATH_TOLL_ADDRESS,
+    };
+
+    // EIP-712 Types
+    const types = {
+      X402Payment: [
+        { name: 'recipient', type: 'address' },
+        { name: 'amount', type: 'uint256' },
+        { name: 'token', type: 'address' },
+        { name: 'nonce', type: 'string' },
+      ],
+    };
+
+    // EIP-712 Message
+    const message = {
+      recipient: EZPATH_TOLL_ADDRESS,
+      amount: QUOTE_COST_USDC,
+      token: TOKEN_ADDRESSES.USDC,
+      nonce,
+    };
+
+    // Sign the payment message
+    const signature = await wallet.signTypedData(domain, types, message);
+
+    // Return as base64 encoded header
+    const paymentProof = JSON.stringify({
+      signature,
+      message,
+      domain,
+    });
+
+    return Buffer.from(paymentProof).toString('base64');
+  } catch (err) {
+    console.warn('[price.ts] Failed to create x402 payment header:', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch price using EZ-Path with x402 payment authorization
  * Races 10 DEX venues and returns best execution
  */
 async function fetchPriceFromEZPath(
@@ -46,13 +113,26 @@ async function fetchPriceFromEZPath(
     url.searchParams.set('buyToken', buyToken);
     url.searchParams.set('sellAmount', sellAmount);
 
-    console.log(`[price.ts] Probing EZ-Path for ${label}...`);
+    console.log(`[price.ts] Querying EZ-Path for ${label}...`);
+
+    // Create x402 payment authorization
+    const xPaymentHeader = await createX402PaymentHeader();
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(url.toString(), { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+
+    const headers: Record<string, string> = {};
+    if (xPaymentHeader) {
+      headers['X-Payment'] = xPaymentHeader;
+    }
+
+    const res = await fetch(url.toString(), {
+      signal: controller.signal,
+      headers,
+    }).finally(() => clearTimeout(timeoutId));
 
     if (!res.ok) {
-      console.warn(`[price.ts] EZ-Path probe returned ${res.status}`);
+      console.warn(`[price.ts] EZ-Path returned ${res.status}`);
       return null;
     }
 
@@ -67,18 +147,18 @@ async function fetchPriceFromEZPath(
     console.log(`[price.ts] ✓ ${label}: $${price.toFixed(4)}`);
     if (data.sources) {
       const venues = data.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
-      console.log(`[price.ts]   Best venues: ${venues}`);
+      console.log(`[price.ts]   Venues: ${venues}`);
     }
 
     return price;
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path probe failed for ${label}:`, err);
+    console.warn(`[price.ts] EZ-Path query failed for ${label}:`, err);
     return null;
   }
 }
 
 /**
- * Fetch ZEN price using EZ-Path free probe
+ * Fetch ZEN price using EZ-Path
  * Query: 1 USDC → ZEN
  */
 async function fetchZENPriceFromEZPath(): Promise<number | null> {
@@ -97,7 +177,7 @@ async function fetchZENPriceFromEZPath(): Promise<number | null> {
 }
 
 /**
- * Fetch ETH price using EZ-Path free probe
+ * Fetch ETH price using EZ-Path
  * Query: 1 USDC → ETH
  */
 async function fetchETHPriceFromEZPath(): Promise<number | null> {
@@ -126,8 +206,8 @@ export async function fetchMarketDataZEN(
 ): Promise<MarketData | null> {
   let currentPrice: number | null = null;
 
-  // Try EZ-Path free probe for primary source
-  console.log('[price.ts] Fetching ZEN price: trying EZ-Path (free probe)...');
+  // Try EZ-Path with x402 payment for primary source
+  console.log('[price.ts] Fetching ZEN price: trying EZ-Path (x402 signed)...');
   currentPrice = await fetchZENPriceFromEZPath();
 
   // Use cached price if EZ-Path fails
@@ -150,7 +230,7 @@ export async function fetchMarketDataZEN(
     usdcBalance,
     assetValuePct,
     usdcValuePct,
-    dailyVolatility: 0.12, // Conservative estimate (12%)
+    dailyVolatility: 0.12,
     priceChange24h: 0,
     timestamp: Date.now(),
   };
@@ -167,8 +247,8 @@ export async function fetchMarketDataETH(
 ): Promise<MarketData | null> {
   let currentPrice: number | null = null;
 
-  // Try EZ-Path free probe for primary source
-  console.log('[price.ts] Fetching ETH price: trying EZ-Path (free probe)...');
+  // Try EZ-Path with x402 payment for primary source
+  console.log('[price.ts] Fetching ETH price: trying EZ-Path (x402 signed)...');
   currentPrice = await fetchETHPriceFromEZPath();
 
   // Use cached price if EZ-Path fails
@@ -191,15 +271,14 @@ export async function fetchMarketDataETH(
     usdcBalance,
     assetValuePct,
     usdcValuePct,
-    dailyVolatility: 0.05, // Conservative estimate (5%)
+    dailyVolatility: 0.05,
     priceChange24h: 0,
     timestamp: Date.now(),
   };
 }
 
 /**
- * Batch fetch market data for both ZEN and ETH (parallel via EZ-Path free probe)
- * No cost: uses free EZ-Path probe endpoint
+ * Batch fetch market data for both ZEN and ETH (parallel via EZ-Path x402)
  */
 export async function fetchMarketDataBatch(
   zenBalance: bigint,
@@ -218,7 +297,7 @@ export async function fetchMarketDataBatch(
 }
 
 /**
- * Fetch fallback prices (cached from last successful EZ-Path probe)
+ * Fetch fallback prices (cached from last successful EZ-Path query)
  */
 export function getFallbackPrices(): {
   zenPrice: number;
