@@ -1,5 +1,4 @@
 import { MarketData, AssetPair } from './types';
-import { ethers } from 'ethers';
 
 // Token addresses on Base
 const TOKEN_ADDRESSES = {
@@ -15,22 +14,18 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
-// EZ-Path endpoint and config
-const EZPATH_ENDPOINT = 'https://ezpath.myezverse.xyz/api/v1/quote';
-const EZPATH_TOLL_ADDRESS = '0x13dde704389b1118b20d2bcc6d3ace749600e2ad';
-const QUOTE_COST_USDC = '30000'; // $0.03 in atomic units (6 decimals)
-const BASE_CHAIN_ID = 8453; // Base mainnet chain ID
-
-// Trader wallet for signing x402 payments
-const TRADER_PRIVATE_KEY = process.env.TRADER_PRIVATE_KEY;
-const wallet = TRADER_PRIVATE_KEY ? new ethers.Wallet(TRADER_PRIVATE_KEY) : null;
-
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
-let nonceCounter = 0; // Simple nonce to prevent replay attacks
+let toolsCache: any = null;
 
 interface EZPathProbeResponse {
+  cost: string;
+  tier: string;
+  description?: string;
+}
+
+interface EZPathQuoteResponse {
   buyAmount: string;
   price: string;
   sources?: Array<{
@@ -40,66 +35,28 @@ interface EZPathProbeResponse {
 }
 
 /**
- * Create x402 signed payment authorization using EIP-712
- * Signs a payment message with the trader's private key
+ * Get MCP EZ-Path tools (cached)
  */
-async function createX402PaymentHeader(): Promise<string | null> {
-  if (!wallet) {
-    console.warn('[price.ts] No TRADER_PRIVATE_KEY, cannot sign x402 payment');
-    return null;
+async function getEZPathTools() {
+  if (toolsCache) {
+    return toolsCache;
   }
 
   try {
-    // Simple nonce to prevent replay (in production, should query on-chain)
-    nonceCounter++;
-    const nonce = nonceCounter.toString();
-
-    // EIP-712 Domain
-    const domain = {
-      name: 'EZ-Path',
-      version: '1',
-      chainId: BASE_CHAIN_ID,
-      verifyingContract: EZPATH_TOLL_ADDRESS,
-    };
-
-    // EIP-712 Types
-    const types = {
-      X402Payment: [
-        { name: 'recipient', type: 'address' },
-        { name: 'amount', type: 'uint256' },
-        { name: 'token', type: 'address' },
-        { name: 'nonce', type: 'string' },
-      ],
-    };
-
-    // EIP-712 Message
-    const message = {
-      recipient: EZPATH_TOLL_ADDRESS,
-      amount: QUOTE_COST_USDC,
-      token: TOKEN_ADDRESSES.USDC,
-      nonce,
-    };
-
-    // Sign the payment message
-    const signature = await wallet.signTypedData(domain, types, message);
-
-    // Return as base64 encoded header
-    const paymentProof = JSON.stringify({
-      signature,
-      message,
-      domain,
-    });
-
-    return Buffer.from(paymentProof).toString('base64');
+    const mcpEzpath = await import('mcp-ezpath');
+    const tools = await mcpEzpath.getTools();
+    toolsCache = tools;
+    return tools;
   } catch (err) {
-    console.warn('[price.ts] Failed to create x402 payment header:', err);
+    console.warn('[price.ts] Failed to load mcp-ezpath:', err);
     return null;
   }
 }
 
 /**
- * Fetch price using EZ-Path with x402 payment authorization
- * Races 10 DEX venues and returns best execution
+ * Fetch price using EZ-Path MCP
+ * Step 1: Call probe (free) to check cost
+ * Step 2: Call quote (paid) to get actual price
  */
 async function fetchPriceFromEZPath(
   sellToken: string,
@@ -108,45 +65,53 @@ async function fetchPriceFromEZPath(
   label: string
 ): Promise<number | null> {
   try {
-    const url = new URL(EZPATH_ENDPOINT);
-    url.searchParams.set('sellToken', sellToken);
-    url.searchParams.set('buyToken', buyToken);
-    url.searchParams.set('sellAmount', sellAmount);
-
-    console.log(`[price.ts] Querying EZ-Path for ${label}...`);
-
-    // Create x402 payment authorization
-    const xPaymentHeader = await createX402PaymentHeader();
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const headers: Record<string, string> = {};
-    if (xPaymentHeader) {
-      headers['X-Payment'] = xPaymentHeader;
-    }
-
-    const res = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers,
-    }).finally(() => clearTimeout(timeoutId));
-
-    if (!res.ok) {
-      console.warn(`[price.ts] EZ-Path returned ${res.status}`);
+    const tools = await getEZPathTools();
+    if (!tools) {
+      console.warn('[price.ts] EZ-Path tools unavailable');
       return null;
     }
 
-    const data = (await res.json()) as EZPathProbeResponse;
-    const price = parseFloat(data.price);
+    console.log(`[price.ts] Probing EZ-Path for ${label}...`);
+
+    // Step 1: Probe (free) - check cost and availability
+    let probeResult: EZPathProbeResponse;
+    try {
+      probeResult = await tools.ezpath_probe({
+        sellToken,
+        buyToken,
+        sellAmount,
+      });
+      console.log(`[price.ts] ✓ Probe OK: cost=${probeResult.cost}, tier=${probeResult.tier}`);
+    } catch (err) {
+      console.warn(`[price.ts] Probe failed for ${label}:`, err);
+      return null;
+    }
+
+    // Step 2: Quote (paid) - get actual price with x402 payment
+    console.log(`[price.ts] Requesting quote for ${label} (tier: ${probeResult.tier})...`);
+    let quoteResult: EZPathQuoteResponse;
+    try {
+      quoteResult = await tools.ezpath_quote({
+        sellToken,
+        buyToken,
+        sellAmount,
+        tier: probeResult.tier || 'basic',
+      });
+    } catch (err) {
+      console.warn(`[price.ts] Quote failed for ${label}:`, err);
+      return null;
+    }
+
+    const price = parseFloat(quoteResult.price);
 
     if (isNaN(price) || price <= 0) {
-      console.warn(`[price.ts] Invalid price from EZ-Path: ${data.price}`);
+      console.warn(`[price.ts] Invalid price from EZ-Path: ${quoteResult.price}`);
       return null;
     }
 
     console.log(`[price.ts] ✓ ${label}: $${price.toFixed(4)}`);
-    if (data.sources) {
-      const venues = data.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
+    if (quoteResult.sources) {
+      const venues = quoteResult.sources.map((s) => `${s.name} (${s.proportion})`).join(', ');
       console.log(`[price.ts]   Venues: ${venues}`);
     }
 

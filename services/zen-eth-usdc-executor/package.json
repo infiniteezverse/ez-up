@@ -18,6 +18,7 @@
     "dotenv": "^16.3.1",
     "ethers": "^6.16.0",
     "express": "^5.2.1",
+    "mcp-ezpath": "^1.0.0",
     "viem": "^2.8.0"
   },
   "devDependencies": {
