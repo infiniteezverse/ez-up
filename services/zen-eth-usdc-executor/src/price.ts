@@ -22,7 +22,8 @@ let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
 
 interface EZPathProbeResponse {
-  estimatedPrice: string;
+  estimatedPrice: string | null;
+  cacheAgeSeconds: number | null;
   tiers: {
     basic: { min_atomic: string; usd: string };
     resilient: { min_atomic: string; usd: string };
@@ -77,6 +78,13 @@ async function fetchPriceViaEZPathProbe(
     }
 
     const probeData = (await res.json()) as EZPathProbeResponse;
+
+    // estimatedPrice might be null if no quote has been cached yet
+    if (!probeData.estimatedPrice) {
+      console.warn(`[price.ts] No estimatedPrice in EZ-Path probe (first query or cache expired)`);
+      return null;
+    }
+
     const estimatedPrice = parseFloat(probeData.estimatedPrice);
 
     if (isNaN(estimatedPrice) || estimatedPrice <= 0) {
@@ -84,7 +92,8 @@ async function fetchPriceViaEZPathProbe(
       return null;
     }
 
-    console.log(`[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)}`);
+    const cacheAge = probeData.cacheAgeSeconds ?? 0;
+    console.log(`[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (cached ${cacheAge}s ago)`);
     console.log(
       `[price.ts]   Pricing: basic=$${probeData.tiers.basic.usd}, resilient=$${probeData.tiers.resilient.usd}, institutional=$${probeData.tiers.institutional.usd}`
     );
