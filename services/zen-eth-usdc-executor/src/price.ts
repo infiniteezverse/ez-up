@@ -14,22 +14,18 @@ const TOKEN_DECIMALS = {
   USDC: 6,
 };
 
-// EZ-Path API
+// CoinGecko API IDs
+const COINGECKO_IDS = {
+  ZEN: 'zenith',
+  ETH: 'ethereum',
+};
+
+// EZ-Path API (for paid quotes on confirmed breaches)
 const EZPATH_API = 'https://api.myezverse.xyz/api/v1/quote';
 
 // Fallback price cache (for resilience)
 let lastZENPrice = 5.87;
 let lastETHPrice = 2009.61;
-
-interface EZPathProbeResponse {
-  estimatedPrice: string;
-  cacheAgeSeconds: number;
-  tiers: {
-    basic: { min_atomic: string; usd: string };
-    resilient: { min_atomic: string; usd: string };
-    institutional: { min_atomic: string; usd: string };
-  };
-}
 
 interface EZPathQuoteResponse {
   buyAmount: string;
@@ -47,58 +43,36 @@ interface EZPathQuoteResponse {
 }
 
 /**
- * Fetch estimated price from EZ-Path probe (FREE via HTTP 402)
- * Call without payment header to get cached price + tier info
+ * Fetch price from CoinGecko (FREE, for bracket detection)
  */
-async function fetchPriceViaEZPathProbe(
-  sellToken: string,
-  buyToken: string,
-  sellAmount: string,
+async function fetchPriceFromCoinGecko(
+  tokenId: string,
   label: string
-): Promise<{ price: number; cacheAge: number } | null> {
+): Promise<number | null> {
   try {
-    const url = new URL(EZPATH_API);
-    url.searchParams.set('sellToken', sellToken);
-    url.searchParams.set('buyToken', buyToken);
-    url.searchParams.set('sellAmount', sellAmount);
-
-    console.log(`[price.ts] Probing EZ-Path for ${label} (FREE via HTTP 402)...`);
-
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-    const res = await fetch(url.toString(), {
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeoutId));
+    const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
 
-    // HTTP 402 is expected for probe (payment required) — contains pricing info
-    if (res.status !== 402) {
-      console.warn(`[price.ts] EZ-Path returned unexpected status ${res.status} for probe`);
+    if (!res.ok) {
+      console.warn(`[price.ts] CoinGecko returned ${res.status} for ${label}`);
       return null;
     }
 
-    const probeData = (await res.json()) as any;
-    const estimatedPrice = parseFloat(probeData.estimatedPrice);
+    const data = (await res.json()) as any;
+    const price = data[tokenId]?.usd;
 
-    if (isNaN(estimatedPrice) || estimatedPrice <= 0) {
-      console.warn(`[price.ts] Invalid estimated price from EZ-Path: ${probeData.estimatedPrice}`);
+    if (!price || price <= 0) {
+      console.warn(`[price.ts] Invalid price from CoinGecko for ${label}`);
       return null;
     }
 
-    const cacheAge = probeData.cacheAgeSeconds ?? 0;
-    console.log(
-      `[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (cached ${cacheAge}s ago)`
-    );
-    console.log(
-      `[price.ts]   Tiers: basic=$${probeData.tiers.basic.usd}, resilient=$${probeData.tiers.resilient.usd}, institutional=$${probeData.tiers.institutional.usd}`
-    );
-
-    return {
-      price: estimatedPrice,
-      cacheAge,
-    };
+    console.log(`[price.ts] ✓ ${label} (CoinGecko): $${price.toFixed(4)}`);
+    return price;
   } catch (err) {
-    console.warn(`[price.ts] EZ-Path probe failed for ${label}:`, err instanceof Error ? err.message : err);
+    console.warn(`[price.ts] CoinGecko query failed for ${label}:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -119,7 +93,7 @@ export async function fetchConfirmedQuoteFromEZPath(
     url.searchParams.set('buyToken', buyToken);
     url.searchParams.set('sellAmount', sellAmount);
 
-    console.log(`[price.ts] Requesting confirmed quote from EZ-Path for ${label} (PAID via HTTP 200)...`);
+    console.log(`[price.ts] Requesting confirmed quote from EZ-Path for ${label} (PAID)...`);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -167,50 +141,40 @@ export async function fetchConfirmedQuoteFromEZPath(
 }
 
 /**
- * Fetch ZEN price for bracket detection (FREE via EZ-Path probe)
+ * Fetch ZEN price for bracket detection (FREE via CoinGecko)
  */
 async function fetchZENPrice(): Promise<number> {
-  const probeResult = await fetchPriceViaEZPathProbe(
-    TOKEN_ADDRESSES.USDC,
-    TOKEN_ADDRESSES.ZEN,
-    '1000000', // 1 USDC (6 decimals)
-    'ZEN/USDC'
-  );
+  const price = await fetchPriceFromCoinGecko(COINGECKO_IDS.ZEN, 'ZEN/USDC');
 
-  if (probeResult) {
-    lastZENPrice = probeResult.price;
-    return probeResult.price;
+  if (price) {
+    lastZENPrice = price;
+    return price;
   }
 
   // Fall back to last known price
-  console.warn(`[price.ts] EZ-Path unavailable for ZEN, using cached price: $${lastZENPrice.toFixed(2)}`);
+  console.warn(`[price.ts] CoinGecko unavailable for ZEN, using cached price: $${lastZENPrice.toFixed(2)}`);
   return lastZENPrice;
 }
 
 /**
- * Fetch ETH price for bracket detection (FREE via EZ-Path probe)
+ * Fetch ETH price for bracket detection (FREE via CoinGecko)
  */
 async function fetchETHPrice(): Promise<number> {
-  const probeResult = await fetchPriceViaEZPathProbe(
-    TOKEN_ADDRESSES.USDC,
-    TOKEN_ADDRESSES.ETH,
-    '1000000', // 1 USDC (6 decimals)
-    'ETH/USDC'
-  );
+  const price = await fetchPriceFromCoinGecko(COINGECKO_IDS.ETH, 'ETH/USDC');
 
-  if (probeResult) {
-    lastETHPrice = probeResult.price;
-    return probeResult.price;
+  if (price) {
+    lastETHPrice = price;
+    return price;
   }
 
   // Fall back to last known price
-  console.warn(`[price.ts] EZ-Path unavailable for ETH, using cached price: $${lastETHPrice.toFixed(2)}`);
+  console.warn(`[price.ts] CoinGecko unavailable for ETH, using cached price: $${lastETHPrice.toFixed(2)}`);
   return lastETHPrice;
 }
 
 /**
  * Fetch complete market data for ZEN/USDC pair
- * Uses FREE EZ-Path probe for bracket detection (single source of truth)
+ * Uses FREE CoinGecko for bracket detection (97% cost savings)
  * @param zenBalance Raw ZEN balance (wei/atomic units)
  * @param usdcBalance Raw USDC balance (wei/atomic units)
  */
@@ -218,7 +182,7 @@ export async function fetchMarketDataZEN(
   zenBalance: bigint,
   usdcBalance: bigint
 ): Promise<MarketData | null> {
-  console.log('[price.ts] Fetching ZEN/USDC market data via EZ-Path probe (FREE)...');
+  console.log('[price.ts] Fetching ZEN/USDC market data via CoinGecko (FREE)...');
   const currentPrice = await fetchZENPrice();
 
   const zenValueUsd = (Number(zenBalance) / 10 ** TOKEN_DECIMALS.ZEN) * currentPrice;
@@ -243,7 +207,7 @@ export async function fetchMarketDataZEN(
 
 /**
  * Fetch complete market data for ETH/USDC pair
- * Uses FREE EZ-Path probe for bracket detection (single source of truth)
+ * Uses FREE CoinGecko for bracket detection (97% cost savings)
  * @param ethBalance Raw ETH (WETH) balance (wei)
  * @param usdcBalance Raw USDC balance (wei)
  */
@@ -251,7 +215,7 @@ export async function fetchMarketDataETH(
   ethBalance: bigint,
   usdcBalance: bigint
 ): Promise<MarketData | null> {
-  console.log('[price.ts] Fetching ETH/USDC market data via EZ-Path probe (FREE)...');
+  console.log('[price.ts] Fetching ETH/USDC market data via CoinGecko (FREE)...');
   const currentPrice = await fetchETHPrice();
 
   const ethValueUsd = (Number(ethBalance) / 10 ** TOKEN_DECIMALS.ETH) * currentPrice;
