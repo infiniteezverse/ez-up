@@ -186,7 +186,7 @@ export async function decideActionV3Enhanced(
     }
   }
 
-  if (!selectedTier && selectedAction === 'HOLD') {
+  if (selectedAction === 'HOLD' || selectedTier === null) {
     return {
       action: 'HOLD',
       pair: marketData.pair,
@@ -286,7 +286,10 @@ export async function decideActionV3Enhanced(
   );
 
   // ============ DECISION READY ============
-  const alphaDepth = tierBreachPercentage / (adjustedUpsideBrackets[selectedTier] || 1);
+  const bracketThreshold = selectedAction === 'BUY'
+    ? (adjustedUpsideBrackets[selectedTier as number] || 1)
+    : (Math.abs(adjustedDownsideBrackets[selectedTier as number]) || 1);
+  const alphaDepth = tierBreachPercentage / bracketThreshold;
 
   return {
     action: selectedAction,
