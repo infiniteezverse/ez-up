@@ -37,3 +37,4 @@ logs/
 # !state/v2-state.json
 # !state/history.json
 # !state/trades.json
+state/
