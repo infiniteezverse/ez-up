@@ -195,16 +195,6 @@ export async function decideActionV3Enhanced(
     };
   }
 
-  // ============ GATE 5: Two-Tick Confirmation ============
-  if (pairState.lastDecisionAction !== selectedAction || pairState.lastDecisionTier !== selectedTier) {
-    return {
-      action: 'HOLD',
-      pair: marketData.pair,
-      percentOfAsset: 0,
-      reason: `Two-tick confirmation pending (last=${pairState.lastDecisionAction}/${pairState.lastDecisionTier}, current=${selectedAction}/${selectedTier})`,
-    };
-  }
-
   // ============ GATE 6: Trend Filter (Lever 2: Dynamic threshold) ============
   if (selectedAction === 'BUY' && selectedTier === 0) {
     if (marketData.dailyVolatility > regimeParams.trendFilterThreshold) {

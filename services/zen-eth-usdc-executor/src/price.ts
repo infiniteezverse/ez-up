@@ -85,11 +85,21 @@ async function fetchPriceViaEZPathProbe(
       return null;
     }
 
-    const estimatedPrice = parseFloat(probeData.estimatedPrice);
+    let estimatedPrice = parseFloat(probeData.estimatedPrice);
 
     if (isNaN(estimatedPrice) || estimatedPrice <= 0) {
       console.warn(`[price.ts] Invalid estimatedPrice from EZ-Path: ${probeData.estimatedPrice}`);
       return null;
+    }
+
+    // EZ-Path returns buyAmount per sellAmount
+    // When selling USDC (6 decimals) for ZEN (18 decimals):
+    // estimatedPrice = ZEN received per 1 USDC
+    // We need USDC per ZEN, so invert
+    if (sellToken.toLowerCase() === TOKEN_ADDRESSES.USDC.toLowerCase() &&
+        (buyToken.toLowerCase() === TOKEN_ADDRESSES.ZEN.toLowerCase() ||
+         buyToken.toLowerCase() === TOKEN_ADDRESSES.ETH.toLowerCase())) {
+      estimatedPrice = 1 / estimatedPrice;
     }
 
     const cacheAge = probeData.cacheAgeSeconds ?? 0;
@@ -170,18 +180,22 @@ export async function fetchConfirmedQuoteFromEZPath(
 
 /**
  * Fetch ZEN price for bracket detection (FREE via EZ-Path probe)
+ * Note: EZ-Path returns ZEN per USDC (e.g., 0.218688 ZEN per 1 USDC)
+ * We need USDC per ZEN (e.g., 4.57 USDC per 1 ZEN), so invert
  */
 async function fetchZENPrice(): Promise<number> {
-  const price = await fetchPriceViaEZPathProbe(
+  const zenPerUsdc = await fetchPriceViaEZPathProbe(
     TOKEN_ADDRESSES.USDC,
     TOKEN_ADDRESSES.ZEN,
     '1000000',
     'ZEN/USDC'
   );
 
-  if (price) {
-    lastZENPrice = price;
-    return price;
+  if (zenPerUsdc && zenPerUsdc > 0) {
+    // Invert: ZEN per USDC → USDC per ZEN
+    const usdcPerZen = 1 / zenPerUsdc;
+    lastZENPrice = usdcPerZen;
+    return usdcPerZen;
   }
 
   // Fall back to cached price
@@ -191,18 +205,22 @@ async function fetchZENPrice(): Promise<number> {
 
 /**
  * Fetch ETH price for bracket detection (FREE via EZ-Path probe)
+ * Note: EZ-Path returns ETH per USDC (e.g., 0.000497 ETH per 1 USDC)
+ * We need USDC per ETH (e.g., 2010 USDC per 1 ETH), so invert
  */
 async function fetchETHPrice(): Promise<number> {
-  const price = await fetchPriceViaEZPathProbe(
+  const ethPerUsdc = await fetchPriceViaEZPathProbe(
     TOKEN_ADDRESSES.USDC,
     TOKEN_ADDRESSES.ETH,
     '1000000',
     'ETH/USDC'
   );
 
-  if (price) {
-    lastETHPrice = price;
-    return price;
+  if (ethPerUsdc && ethPerUsdc > 0) {
+    // Invert: ETH per USDC → USDC per ETH
+    const usdcPerEth = 1 / ethPerUsdc;
+    lastETHPrice = usdcPerEth;
+    return usdcPerEth;
   }
 
   // Fall back to cached price
