@@ -112,12 +112,6 @@ async function startPriceMonitor(): Promise<void> {
         continue;
       }
 
-      // DEBUG: Log raw market data
-      console.log(`[price-monitor] DEBUG MarketData:`, {
-        zen: marketData.zen.currentPrice,
-        eth: marketData.eth.currentPrice,
-      });
-
       // Load current state
       const state = loadStateV2();
 

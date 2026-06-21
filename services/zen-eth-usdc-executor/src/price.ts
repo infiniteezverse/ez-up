@@ -80,9 +80,8 @@ async function fetchPriceViaEZPathProbe(
 
     const probeData = (await res.json()) as EZPathProbeResponse;
 
-    console.log(`[price.ts] DEBUG Raw EZ-Path response:`, { priceUsdEstimate: probeData.priceUsdEstimate, estimatedPrice: probeData.estimatedPrice });
-
-    // estimatedPrice might be null if no quote has been cached yet
+    // priceUsdEstimate is the standard format (USDC per asset) from EZ-Path
+    // estimatedPrice is deprecated but kept as fallback for compatibility
     if (!probeData.estimatedPrice && !probeData.priceUsdEstimate) {
       console.warn(`[price.ts] No price data in EZ-Path probe`);
       return null;

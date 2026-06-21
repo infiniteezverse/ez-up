@@ -1,0 +1,34 @@
+{
+  "version": "2.0",
+  "global": {
+    "lastPnlCheckTimestamp": 1780275924677,
+    "dailyDrawdownPercent": 0,
+    "peakDailyValue": 89.8884534622021
+  },
+  "pairs": {
+    "ZEN_USDC": {
+      "entryPrice": 5.87,
+      "lastCycleHigh": 5.99,
+      "lastTradeTimestamp": 0,
+      "tradesToday": 0,
+      "lastTradeDay": 20605,
+      "totalTrades": 0,
+      "totalVolumeUsd": 0,
+      "openingDayAssetValue": 12502120778330900000,
+      "openingDayUsdcValue": 15000750,
+      "dayOpenedKey": 20605
+    },
+    "ETH_USDC": {
+      "entryPrice": 2009.61,
+      "lastCycleHigh": 2014.83,
+      "lastTradeTimestamp": 0,
+      "tradesToday": 0,
+      "lastTradeDay": 20605,
+      "totalTrades": 0,
+      "totalVolumeUsd": 0,
+      "openingDayAssetValue": 0,
+      "openingDayUsdcValue": 15000750,
+      "dayOpenedKey": 20605
+    }
+  }
+}

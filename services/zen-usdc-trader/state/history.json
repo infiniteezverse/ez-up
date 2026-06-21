@@ -9,6 +9,16 @@
       "zenPct": 0.5034078336262509,
       "usdcPct": 0.49659216637374903,
       "totalTrades": 0
+    },
+    {
+      "date": "2026-05-25",
+      "tvlUsd": 155.03432298131776,
+      "zenAmount": 12.5021207783309,
+      "usdcAmount": 75.02075,
+      "zenPriceUsd": 6.4,
+      "zenPct": 0.5161023149110001,
+      "usdcPct": 0.48389768508899994,
+      "totalTrades": 0
     }
   ]
 }
