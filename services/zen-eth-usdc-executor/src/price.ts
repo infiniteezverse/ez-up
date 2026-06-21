@@ -23,6 +23,7 @@ let lastETHPrice = 2009.61;
 
 interface EZPathProbeResponse {
   estimatedPrice: string | null;
+  priceUsdEstimate?: string | null;  // Standard format: USDC per asset
   cacheAgeSeconds: number | null;
   tiers: {
     basic: { min_atomic: string; usd: string };
@@ -79,31 +80,25 @@ async function fetchPriceViaEZPathProbe(
 
     const probeData = (await res.json()) as EZPathProbeResponse;
 
+    console.log(`[price.ts] DEBUG Raw EZ-Path response:`, { priceUsdEstimate: probeData.priceUsdEstimate, estimatedPrice: probeData.estimatedPrice });
+
     // estimatedPrice might be null if no quote has been cached yet
-    if (!probeData.estimatedPrice) {
-      console.warn(`[price.ts] No estimatedPrice in EZ-Path probe (first query or cache expired)`);
+    if (!probeData.estimatedPrice && !probeData.priceUsdEstimate) {
+      console.warn(`[price.ts] No price data in EZ-Path probe`);
       return null;
     }
 
-    let estimatedPrice = parseFloat(probeData.estimatedPrice);
+    // Use priceUsdEstimate if available (new standard format), fall back to estimatedPrice
+    const priceToUse = probeData.priceUsdEstimate || probeData.estimatedPrice;
+    let estimatedPrice = parseFloat(priceToUse!);
 
     if (isNaN(estimatedPrice) || estimatedPrice <= 0) {
-      console.warn(`[price.ts] Invalid estimatedPrice from EZ-Path: ${probeData.estimatedPrice}`);
+      console.warn(`[price.ts] Invalid price from EZ-Path: ${priceToUse}`);
       return null;
-    }
-
-    // EZ-Path returns buyAmount per sellAmount
-    // When selling USDC (6 decimals) for ZEN (18 decimals):
-    // estimatedPrice = ZEN received per 1 USDC
-    // We need USDC per ZEN, so invert
-    if (sellToken.toLowerCase() === TOKEN_ADDRESSES.USDC.toLowerCase() &&
-        (buyToken.toLowerCase() === TOKEN_ADDRESSES.ZEN.toLowerCase() ||
-         buyToken.toLowerCase() === TOKEN_ADDRESSES.ETH.toLowerCase())) {
-      estimatedPrice = 1 / estimatedPrice;
     }
 
     const cacheAge = probeData.cacheAgeSeconds ?? 0;
-    console.log(`[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (cached ${cacheAge}s ago)`);
+    console.log(`[price.ts] ✓ ${label} (EZ-Path probe): $${estimatedPrice.toFixed(4)} (fresh)`);
     console.log(
       `[price.ts]   Pricing: basic=$${probeData.tiers.basic.usd}, resilient=$${probeData.tiers.resilient.usd}, institutional=$${probeData.tiers.institutional.usd}`
     );
@@ -180,22 +175,19 @@ export async function fetchConfirmedQuoteFromEZPath(
 
 /**
  * Fetch ZEN price for bracket detection (FREE via EZ-Path probe)
- * Note: EZ-Path returns ZEN per USDC (e.g., 0.218688 ZEN per 1 USDC)
- * We need USDC per ZEN (e.g., 4.57 USDC per 1 ZEN), so invert
+ * EZ-Path now returns priceUsdEstimate in standard format: USDC per ZEN
  */
 async function fetchZENPrice(): Promise<number> {
-  const zenPerUsdc = await fetchPriceViaEZPathProbe(
+  const price = await fetchPriceViaEZPathProbe(
     TOKEN_ADDRESSES.USDC,
     TOKEN_ADDRESSES.ZEN,
     '1000000',
     'ZEN/USDC'
   );
 
-  if (zenPerUsdc && zenPerUsdc > 0) {
-    // Invert: ZEN per USDC → USDC per ZEN
-    const usdcPerZen = 1 / zenPerUsdc;
-    lastZENPrice = usdcPerZen;
-    return usdcPerZen;
+  if (price && price > 0) {
+    lastZENPrice = price;
+    return price;
   }
 
   // Fall back to cached price
@@ -205,22 +197,19 @@ async function fetchZENPrice(): Promise<number> {
 
 /**
  * Fetch ETH price for bracket detection (FREE via EZ-Path probe)
- * Note: EZ-Path returns ETH per USDC (e.g., 0.000497 ETH per 1 USDC)
- * We need USDC per ETH (e.g., 2010 USDC per 1 ETH), so invert
+ * EZ-Path now returns priceUsdEstimate in standard format: USDC per ETH
  */
 async function fetchETHPrice(): Promise<number> {
-  const ethPerUsdc = await fetchPriceViaEZPathProbe(
+  const price = await fetchPriceViaEZPathProbe(
     TOKEN_ADDRESSES.USDC,
     TOKEN_ADDRESSES.ETH,
     '1000000',
     'ETH/USDC'
   );
 
-  if (ethPerUsdc && ethPerUsdc > 0) {
-    // Invert: ETH per USDC → USDC per ETH
-    const usdcPerEth = 1 / ethPerUsdc;
-    lastETHPrice = usdcPerEth;
-    return usdcPerEth;
+  if (price && price > 0) {
+    lastETHPrice = price;
+    return price;
   }
 
   // Fall back to cached price
