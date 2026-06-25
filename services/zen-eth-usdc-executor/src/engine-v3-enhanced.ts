@@ -164,23 +164,25 @@ export async function decideActionV3Enhanced(
   let selectedAction: TradeAction = 'HOLD';
   let tierBreachPercentage = 0;
 
-  if (canBuy && moveFromEntry > 0) {
-    for (let i = adjustedUpsideBrackets.length - 1; i >= 0; i--) {
-      if (moveFromEntry >= adjustedUpsideBrackets[i]) {
+  // BUY when price DOWN from entry (downside breach)
+  if (canBuy && moveFromEntry < 0) {
+    for (let i = adjustedDownsideBrackets.length - 1; i >= 0; i--) {
+      if (moveFromEntry <= adjustedDownsideBrackets[i]) {
         selectedTier = i;
         selectedAction = 'BUY';
-        tierBreachPercentage = moveFromEntry - adjustedUpsideBrackets[i];
+        tierBreachPercentage = Math.abs(moveFromEntry) - Math.abs(adjustedDownsideBrackets[i]);
         break;
       }
     }
   }
 
-  if (canSell && moveFromHigh < 0) {
-    for (let i = adjustedDownsideBrackets.length - 1; i >= 0; i--) {
-      if (moveFromHigh <= adjustedDownsideBrackets[i]) {
+  // SELL when price UP from entry (upside breach)
+  if (canSell && moveFromEntry > 0) {
+    for (let i = adjustedUpsideBrackets.length - 1; i >= 0; i--) {
+      if (moveFromEntry >= adjustedUpsideBrackets[i]) {
         selectedTier = i;
         selectedAction = 'SELL';
-        tierBreachPercentage = Math.abs(moveFromHigh) - Math.abs(adjustedDownsideBrackets[i]);
+        tierBreachPercentage = moveFromEntry - adjustedUpsideBrackets[i];
         break;
       }
     }

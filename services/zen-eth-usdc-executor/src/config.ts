@@ -9,7 +9,7 @@ import { PairConfig, AssetPair } from './types';
 export const ZEN_USDC_CONFIG: PairConfig = {
   pair: 'ZEN_USDC',
   assetDecimals: 18,
-  minNotionalUsd: 10, // Minimum trade size
+  minNotionalUsd: 3, // Minimum trade size
 
   // Allocation bands (30-70% per asset)
   minAssetPct: 0.30,
@@ -41,7 +41,7 @@ export const ZEN_USDC_CONFIG: PairConfig = {
 export const ETH_USDC_CONFIG: PairConfig = {
   pair: 'ETH_USDC',
   assetDecimals: 18,
-  minNotionalUsd: 10,
+  minNotionalUsd: 3,
 
   // Allocation bands (30-70% per asset)
   minAssetPct: 0.30,

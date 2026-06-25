@@ -35,6 +35,7 @@ interface EZPathProbeResponse {
 interface EZPathQuoteResponse {
   buyAmount: string;
   price: string;
+  priceUsd?: string;  // Standard format: USDC per buyToken
   expiresAt: number;
   slippageGuarantee: {
     worstCase: string;
