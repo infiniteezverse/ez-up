@@ -81,12 +81,17 @@ async function fetchPriceViaEZPathProbe(
 
     const probeData = (await res.json()) as EZPathProbeResponse;
 
-    console.log(`[price.ts] DEBUG: EZ-Path response for ${label}:`, JSON.stringify(probeData));
+    // Check for rate limiting
+    if ((probeData as any).status === 'rate_limited') {
+      const retryAfter = (probeData as any).retry_after || 60;
+      console.warn(`[price.ts] EZ-Path rate limited for ${label}, retry after ${retryAfter}s`);
+      return null;
+    }
 
     // priceUsdEstimate is the standard format (USDC per asset) from EZ-Path
     // estimatedPrice is deprecated but kept as fallback for compatibility
     if (!probeData.estimatedPrice && !probeData.priceUsdEstimate) {
-      console.warn(`[price.ts] No price data in EZ-Path probe`);
+      console.warn(`[price.ts] No price data in EZ-Path probe for ${label}`);
       return null;
     }
 
