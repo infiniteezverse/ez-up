@@ -81,6 +81,8 @@ async function fetchPriceViaEZPathProbe(
 
     const probeData = (await res.json()) as EZPathProbeResponse;
 
+    console.log(`[price.ts] DEBUG: EZ-Path response for ${label}:`, JSON.stringify(probeData));
+
     // priceUsdEstimate is the standard format (USDC per asset) from EZ-Path
     // estimatedPrice is deprecated but kept as fallback for compatibility
     if (!probeData.estimatedPrice && !probeData.priceUsdEstimate) {
