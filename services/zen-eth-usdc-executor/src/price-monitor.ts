@@ -1,7 +1,7 @@
 /**
  * Continuous Price Monitor
  * Watches price movements and triggers bot execution when brackets are breached
- * Runs indefinitely, checking every 3 minutes for price action
+ * Runs indefinitely, checking every 10 minutes for price action
  */
 
 import dotenv from 'dotenv';
@@ -26,7 +26,7 @@ if (!TRADER_PRIVATE_KEY) {
 }
 
 // Configuration
-const POLL_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
+const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
 
@@ -82,7 +82,7 @@ function checkBracketBreach(
  * Main monitoring loop
  */
 async function startPriceMonitor(): Promise<void> {
-  console.log(`[price-monitor] Starting continuous price monitor (3-minute interval)`);
+  console.log(`[price-monitor] Starting continuous price monitor (10-minute interval)`);
   console.log(`[price-monitor] Bot wallet: ${BOT_WALLET}`);
   console.log(`[price-monitor] Press Ctrl+C to stop\n`);
 
@@ -184,7 +184,7 @@ async function startPriceMonitor(): Promise<void> {
       }
 
       // Sleep until next check
-      console.log(`[price-monitor] 😴 Sleeping for 3 minutes...\n`);
+      console.log(`[price-monitor] 😴 Sleeping for 10 minutes...\n`);
       await sleep(POLL_INTERVAL_MS);
     } catch (err) {
       console.error(`[price-monitor] Fatal error:`, err);
